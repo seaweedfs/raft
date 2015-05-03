@@ -1,6 +1,6 @@
 package protobuf;
 
-import "code.google.com/p/gogoprotobuf/gogoproto/gogo.proto";
+import "github.com/gogo/protobuf/gogoproto/gogo.proto";
 
 option (gogoproto.gostring_all) = true;
 option (gogoproto.equal_all) = true;
@@ -17,13 +17,13 @@ option (gogoproto.unmarshaler_all) = true;
 message SnapshotRecoveryRequest {
 	required string  LeaderName=1;
 	required uint64  LastIndex=2;
-	required uint64  LastTerm=3;   
+	required uint64  LastTerm=3;
 
 	message Peer {
 		required string Name=1;
 		required string ConnectionString=2;
-	}  
-	repeated Peer  Peers=4;  
+	}
+	repeated Peer  Peers=4;
 
 	required bytes   State=5;
 }

@@ -1,6 +1,6 @@
 package protobuf;
 
-import "code.google.com/p/gogoprotobuf/gogoproto/gogo.proto";
+import "github.com/gogo/protobuf/gogoproto/gogo.proto";
 
 option (gogoproto.gostring_all) = true;
 option (gogoproto.equal_all) = true;
@@ -15,7 +15,7 @@ option (gogoproto.sizer_all) = true;
 option (gogoproto.unmarshaler_all) = true;
 
 message SnapshotRecoveryResponse {
-	required uint64 Term=1;     
+	required uint64 Term=1;
 	required bool Success=2;
 	required uint64 CommitIndex=3;
 }
