@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/gogo/protobuf/proto"
 	"github.com/chrislusf/raft/protobuf"
+	"github.com/gogo/protobuf/proto"
 )
 
 // A log entry stores a single item in the log.
