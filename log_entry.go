@@ -36,9 +36,9 @@ func newLogEntry(log *Log, event *ev, index uint64, term uint64, command Command
 	}
 
 	pb := &protobuf.LogEntry{
-		Index:       proto.Uint64(index),
-		Term:        proto.Uint64(term),
-		CommandName: proto.String(commandName),
+		Index:       index,
+		Term:        term,
+		CommandName: commandName,
 		Command:     buf.Bytes(),
 	}
 

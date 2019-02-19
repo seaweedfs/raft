@@ -48,11 +48,11 @@ func newAppendEntriesRequest(term uint64, prevLogIndex uint64, prevLogTerm uint6
 // written and any error that may have occurred.
 func (req *AppendEntriesRequest) Encode(w io.Writer) (int, error) {
 	pb := &protobuf.AppendEntriesRequest{
-		Term:         proto.Uint64(req.Term),
-		PrevLogIndex: proto.Uint64(req.PrevLogIndex),
-		PrevLogTerm:  proto.Uint64(req.PrevLogTerm),
-		CommitIndex:  proto.Uint64(req.CommitIndex),
-		LeaderName:   proto.String(req.LeaderName),
+		Term:         req.Term,
+		PrevLogIndex: req.PrevLogIndex,
+		PrevLogTerm:  req.PrevLogTerm,
+		CommitIndex:  req.CommitIndex,
+		LeaderName:   req.LeaderName,
 		Entries:      req.Entries,
 	}
 
@@ -91,10 +91,10 @@ func (req *AppendEntriesRequest) Decode(r io.Reader) (int, error) {
 // Creates a new AppendEntries response.
 func newAppendEntriesResponse(term uint64, success bool, index uint64, commitIndex uint64) *AppendEntriesResponse {
 	pb := &protobuf.AppendEntriesResponse{
-		Term:        proto.Uint64(term),
-		Index:       proto.Uint64(index),
-		Success:     proto.Bool(success),
-		CommitIndex: proto.Uint64(commitIndex),
+		Term:        term,
+		Index:       index,
+		Success:     success,
+		CommitIndex: commitIndex,
 	}
 
 	return &AppendEntriesResponse{

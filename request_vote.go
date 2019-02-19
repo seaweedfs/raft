@@ -38,10 +38,10 @@ func newRequestVoteRequest(term uint64, candidateName string, lastLogIndex uint6
 // written and any error that may have occurred.
 func (req *RequestVoteRequest) Encode(w io.Writer) (int, error) {
 	pb := &protobuf.RequestVoteRequest{
-		Term:          proto.Uint64(req.Term),
-		LastLogIndex:  proto.Uint64(req.LastLogIndex),
-		LastLogTerm:   proto.Uint64(req.LastLogTerm),
-		CandidateName: proto.String(req.CandidateName),
+		Term:          req.Term,
+		LastLogIndex:  req.LastLogIndex,
+		LastLogTerm:   req.LastLogTerm,
+		CandidateName: req.CandidateName,
 	}
 	p, err := proto.Marshal(pb)
 	if err != nil {
@@ -87,8 +87,8 @@ func newRequestVoteResponse(term uint64, voteGranted bool) *RequestVoteResponse 
 // written and any error that may have occurred.
 func (resp *RequestVoteResponse) Encode(w io.Writer) (int, error) {
 	pb := &protobuf.RequestVoteResponse{
-		Term:        proto.Uint64(resp.Term),
-		VoteGranted: proto.Bool(resp.VoteGranted),
+		Term:        resp.Term,
+		VoteGranted: resp.VoteGranted,
 	}
 
 	p, err := proto.Marshal(pb)

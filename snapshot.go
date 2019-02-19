@@ -112,15 +112,15 @@ func (req *SnapshotRecoveryRequest) Encode(w io.Writer) (int, error) {
 
 	for i, peer := range req.Peers {
 		protoPeers[i] = &protobuf.SnapshotRecoveryRequest_Peer{
-			Name:             proto.String(peer.Name),
-			ConnectionString: proto.String(peer.ConnectionString),
+			Name:             peer.Name,
+			ConnectionString: peer.ConnectionString,
 		}
 	}
 
 	pb := &protobuf.SnapshotRecoveryRequest{
-		LeaderName: proto.String(req.LeaderName),
-		LastIndex:  proto.Uint64(req.LastIndex),
-		LastTerm:   proto.Uint64(req.LastTerm),
+		LeaderName: req.LeaderName,
+		LastIndex:  req.LastIndex,
+		LastTerm:   req.LastTerm,
 		Peers:      protoPeers,
 		State:      req.State,
 	}
@@ -178,9 +178,9 @@ func newSnapshotRecoveryResponse(term uint64, success bool, commitIndex uint64) 
 // Returns the number of bytes written and any error that occurs.
 func (req *SnapshotRecoveryResponse) Encode(w io.Writer) (int, error) {
 	pb := &protobuf.SnapshotRecoveryResponse{
-		Term:        proto.Uint64(req.Term),
-		Success:     proto.Bool(req.Success),
-		CommitIndex: proto.Uint64(req.CommitIndex),
+		Term:        req.Term,
+		Success:     req.Success,
+		CommitIndex: req.CommitIndex,
 	}
 	p, err := proto.Marshal(pb)
 	if err != nil {
@@ -225,9 +225,9 @@ func newSnapshotRequest(leaderName string, snapshot *Snapshot) *SnapshotRequest 
 // written and any error that may have occurred.
 func (req *SnapshotRequest) Encode(w io.Writer) (int, error) {
 	pb := &protobuf.SnapshotRequest{
-		LeaderName: proto.String(req.LeaderName),
-		LastIndex:  proto.Uint64(req.LastIndex),
-		LastTerm:   proto.Uint64(req.LastTerm),
+		LeaderName: req.LeaderName,
+		LastIndex:  req.LastIndex,
+		LastTerm:   req.LastTerm,
 	}
 	p, err := proto.Marshal(pb)
 	if err != nil {
@@ -272,7 +272,7 @@ func newSnapshotResponse(success bool) *SnapshotResponse {
 // written and any error that may have occurred.
 func (resp *SnapshotResponse) Encode(w io.Writer) (int, error) {
 	pb := &protobuf.SnapshotResponse{
-		Success: proto.Bool(resp.Success),
+		Success: resp.Success,
 	}
 	p, err := proto.Marshal(pb)
 	if err != nil {
