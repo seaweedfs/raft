@@ -19,50 +19,61 @@ message AppendEntriesRequest {
 }
 
 message AppendEntriesResponse {
-    uint64 Term=1;
-    uint64 Index=2;
-    uint64 CommitIndex=3;
-    bool   Success=4;
+    uint64 Term = 1;
+    uint64 Index = 2;
+    uint64 CommitIndex = 3;
+    bool Success = 4;
 }
 
 message RequestVoteRequest {
-    uint64 Term=1;
-    uint64 LastLogIndex=2;
-    uint64 LastLogTerm=3;
-    string CandidateName=4;
+    uint64 Term = 1;
+    uint64 LastLogIndex = 2;
+    uint64 LastLogTerm = 3;
+    string CandidateName = 4;
 }
 
 message RequestVoteResponse {
-    uint64 Term=1;
-    bool VoteGranted=2;
+    uint64 Term = 1;
+    bool VoteGranted = 2;
 }
 
 message SnapshotRecoveryRequest {
-    string  LeaderName=1;
-    uint64  LastIndex=2;
-    uint64  LastTerm=3;
+    string LeaderName = 1;
+    uint64 LastIndex = 2;
+    uint64 LastTerm = 3;
 
     message Peer {
-        string Name=1;
-        string ConnectionString=2;
+        string Name = 1;
+        string ConnectionString = 2;
     }
-    repeated Peer  Peers=4;
+    repeated Peer Peers = 4;
 
-    bytes   State=5;
+    bytes State = 5;
 }
 
 message SnapshotRecoveryResponse {
-    uint64 Term=1;
-    bool Success=2;
-    uint64 CommitIndex=3;
+    uint64 Term = 1;
+    bool Success = 2;
+    uint64 CommitIndex = 3;
 }
 
 message SnapshotRequest {
-    string LeaderName=1;
-    uint64 LastIndex=2;
-    uint64 LastTerm=3;
+    string LeaderName = 1;
+    uint64 LastIndex = 2;
+    uint64 LastTerm = 3;
 }
 
 message SnapshotResponse {
-    bool Success=1;
+    bool Success = 1;
+}
+
+service Raft {
+    rpc SendVoteRequest (RequestVoteRequest) returns (RequestVoteResponse) {
+    }
+    rpc SendAppendEntriesRequest (AppendEntriesRequest) returns (AppendEntriesResponse) {
+    }
+    rpc SendSnapshotRequest (SnapshotRequest) returns (SnapshotResponse) {
+    }
+    rpc SendSnapshotRecoveryRequest (SnapshotRecoveryRequest) returns (SnapshotRecoveryResponse) {
+    }
 }
