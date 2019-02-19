@@ -68,12 +68,12 @@ message SnapshotResponse {
 }
 
 service Raft {
-    rpc SendVoteRequest (RequestVoteRequest) returns (RequestVoteResponse) {
+    rpc OnSendVoteRequest (RequestVoteRequest) returns (RequestVoteResponse) {
     }
-    rpc SendAppendEntriesRequest (AppendEntriesRequest) returns (AppendEntriesResponse) {
+    rpc OnSendAppendEntriesRequest (AppendEntriesRequest) returns (AppendEntriesResponse) {
     }
-    rpc SendSnapshotRequest (SnapshotRequest) returns (SnapshotResponse) {
+    rpc OnSendSnapshotRequest (SnapshotRequest) returns (SnapshotResponse) {
     }
-    rpc SendSnapshotRecoveryRequest (SnapshotRecoveryRequest) returns (SnapshotRecoveryResponse) {
+    rpc OnSendSnapshotRecoveryRequest (SnapshotRecoveryRequest) returns (SnapshotRecoveryResponse) {
     }
 }
