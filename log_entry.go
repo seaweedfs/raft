@@ -7,7 +7,7 @@ import (
 	"io"
 
 	"github.com/chrislusf/raft/protobuf"
-	"github.com/gogo/protobuf/proto"
+	"github.com/golang/protobuf/proto"
 )
 
 // A log entry stores a single item in the log.
