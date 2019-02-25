@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"path"
@@ -51,7 +52,11 @@ func NewHTTPTransporter(prefix string, timeout time.Duration) *HTTPTransporter {
 		requestVotePath:      joinPath(prefix, "/requestVote"),
 		snapshotPath:         joinPath(prefix, "/snapshot"),
 		snapshotRecoveryPath: joinPath(prefix, "/snapshotRecovery"),
-		Transport:            &http.Transport{DisableKeepAlives: false},
+		Transport: &http.Transport{
+			DisableKeepAlives: false,
+			DialContext: (&net.Dialer{
+				Timeout: time.Second,
+			}).DialContext},
 	}
 	t.httpClient.Transport = t.Transport
 	t.Transport.ResponseHeaderTimeout = timeout
@@ -271,6 +276,7 @@ func (t *HTTPTransporter) requestVoteHandler(server Server) http.HandlerFunc {
 			http.Error(w, "Failed creating response.", http.StatusInternalServerError)
 			return
 		}
+
 		if _, err := resp.Encode(w); err != nil {
 			http.Error(w, "", http.StatusInternalServerError)
 			return

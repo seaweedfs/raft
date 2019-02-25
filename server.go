@@ -660,6 +660,18 @@ func (s *server) sendAsync(value interface{}) {
 	}()
 }
 
+func (s *server) checkQuorumActive(timeout time.Duration) bool {
+	s.debugln("check.quorum.active")
+	act := 1
+	now := time.Now()
+	for _, peer := range s.peers {
+		if (now.Unix() - peer.LastActivity().Unix()) < int64(timeout.Seconds()) {
+			act += 1
+		}
+	}
+	return act >= s.QuorumSize()
+}
+
 // The event loop that is run when the server is in a Follower state.
 // Responds to RPCs from candidates and leaders.
 // Converts to candidate if election timeout elapses without either:
@@ -828,6 +840,7 @@ func (s *server) leaderLoop() {
 		s.Do(NOPCommand{})
 	}()
 
+	ticker := time.Tick(s.ElectionTimeout())
 	// Begin to collect response from followers
 	for s.State() == Leader {
 		var err error
@@ -840,10 +853,30 @@ func (s *server) leaderLoop() {
 			s.setState(Stopped)
 			return
 
+		case <-ticker:
+			// Split-brain
+			if s.checkQuorumActive(s.ElectionTimeout()) == false {
+				s.debugln("step.down.to.follower")
+				var wg sync.WaitGroup
+				for _, peer := range s.peers {
+					wg.Add(1)
+					go func(peer *Peer) {
+						defer wg.Done()
+						peer.stopHeartbeat(false)
+					}(peer)
+				}
+				wg.Wait()
+
+				s.leader = ""
+				s.setState(Follower)
+			}
 		case e := <-s.c:
 			switch req := e.target.(type) {
 			case Command:
 				s.processCommand(req, e)
+				for _, peer := range s.peers {
+					peer.AppendEntryRequestChan <- true
+				}
 				continue
 			case *AppendEntriesRequest:
 				e.returnValue, _ = s.processAppendEntriesRequest(req)

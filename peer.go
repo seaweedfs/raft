@@ -21,6 +21,8 @@ type Peer struct {
 	heartbeatInterval time.Duration
 	lastActivity      time.Time
 	sync.RWMutex
+
+	AppendEntryRequestChan chan bool
 }
 
 //------------------------------------------------------------------------------
@@ -86,6 +88,7 @@ func (p *Peer) setLastActivity(now time.Time) {
 
 // Starts the peer heartbeat.
 func (p *Peer) startHeartbeat() {
+	p.AppendEntryRequestChan = make(chan bool, 1024)
 	p.stopChan = make(chan bool)
 	c := make(chan bool)
 
@@ -157,7 +160,8 @@ func (p *Peer) heartbeat(c chan bool) {
 				debugln("peer.heartbeat.stop: ", p.Name)
 				return
 			}
-
+		case <-p.AppendEntryRequestChan:
+			p.flush()
 		case <-ticker:
 			start := time.Now()
 			p.flush()
