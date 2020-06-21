@@ -3,4 +3,4 @@ all: gen
 .PHONY : gen
 
 gen:
-	protoc raft.proto --go_out=plugins=grpc:.
+	protoc seaweed_raft.proto --go_out=plugins=grpc:. --go_opt=paths=source_relative
