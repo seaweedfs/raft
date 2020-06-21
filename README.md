@@ -1,4 +1,5 @@
-go-raft [![Build Status](https://drone.io/github.com/goraft/raft/status.png)](https://drone.io/github.com/goraft/raft/latest) [![Coverage Status](https://coveralls.io/repos/goraft/raft/badge.png?branch=master)](https://coveralls.io/r/goraft/raft?branch=master)
+go-raft 
+
 =======
 
 ## Overview
