@@ -4,8 +4,8 @@ import (
 	"io"
 	"io/ioutil"
 
+	"github.com/chrislusf/raft/protobuf"
 	"github.com/golang/protobuf/proto"
-	"github.com/robin1900/raft/protobuf"
 )
 
 // The request sent to a server to vote for a candidate to become a leader.

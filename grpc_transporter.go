@@ -3,7 +3,7 @@ package raft
 import (
 	context2 "context"
 	"fmt"
-	"github.com/robin1900/raft/protobuf"
+	"github.com/chrislusf/raft/protobuf"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/keepalive"
 	"sync"
