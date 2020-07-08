@@ -988,7 +988,12 @@ func (s *server) processAppendEntriesRequest(req *AppendEntriesRequest) (*Append
 
 		// discover new leader when candidate
 		// save leader name when follower
+		prevLeader := s.leader
 		s.leader = req.LeaderName
+		if prevLeader != s.leader {
+			s.DispatchEvent(newEvent(LeaderChangeEventType, s.leader, prevLeader))
+		}
+
 	} else {
 		// Update term and leader.
 		s.updateCurrentTerm(req.Term, req.LeaderName)

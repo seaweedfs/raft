@@ -3,13 +3,12 @@ package raft
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/golang/protobuf/proto"
+	"github.com/robin1900/raft/protobuf"
 	"hash/crc32"
 	"io"
 	"io/ioutil"
 	"os"
-
-	"github.com/chrislusf/raft/protobuf"
-	"github.com/golang/protobuf/proto"
 )
 
 // Snapshot represents an in-memory representation of the current state of the system.

@@ -1,7 +1,7 @@
 syntax = "proto3";
 
 package protobuf;
-option go_package = "github.com/chrislusf/raft/protobuf";
+option go_package = "github.com/robin1900/raft/protobuf";
 
 message LogEntry {
     uint64 Index = 1;
