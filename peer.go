@@ -17,12 +17,12 @@ type Peer struct {
 	Name              string `json:"name"`
 	ConnectionString  string `json:"connectionString"`
 	prevLogIndex      uint64
-	stopChan          chan bool
+	stopChan          chan bool `json:"-"`
 	heartbeatInterval time.Duration
 	lastActivity      time.Time
 	sync.RWMutex
 
-	AppendEntryRequestChan chan bool
+	AppendEntryRequestChan chan bool `json:"-"`
 }
 
 //------------------------------------------------------------------------------

@@ -1457,18 +1457,23 @@ func (s *server) writeConf() {
 		Peers:       peers,
 	}
 
-	b, _ := json.Marshal(r)
+	b, err := json.Marshal(r)
+	if err != nil {
+		panic(err)
+	}
 
 	confPath := path.Join(s.path, "conf")
 	tmpConfPath := path.Join(s.path, "conf.tmp")
 
-	err := writeFileSynced(tmpConfPath, b, 0600)
+	err = writeFileSynced(tmpConfPath, b, 0600)
 
 	if err != nil {
 		panic(err)
 	}
 
-	os.Rename(tmpConfPath, confPath)
+	if err := os.Rename(tmpConfPath, confPath); err != nil {
+		panic(err)
+	}
 }
 
 // Read the configuration for the server.
