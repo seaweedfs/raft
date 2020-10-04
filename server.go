@@ -683,6 +683,7 @@ func (s *server) followerLoop() {
 	timeoutChan := afterBetween(s.ElectionTimeout(), s.ElectionTimeout()*2)
 
 	for s.State() == Follower {
+		s.maybeTakeSnapshot()
 		var err error
 		update := false
 		select {
@@ -843,6 +844,7 @@ func (s *server) leaderLoop() {
 	ticker := time.Tick(s.ElectionTimeout())
 	// Begin to collect response from followers
 	for s.State() == Leader {
+		s.maybeTakeSnapshot()
 		var err error
 		select {
 		case <-s.stopped:
@@ -1211,6 +1213,17 @@ func (s *server) RemovePeer(name string) error {
 //--------------------------------------
 // Log compaction
 //--------------------------------------
+func (s *server) maybeTakeSnapshot() {
+	if s.stateMachine != nil && s.pendingSnapshot == nil && len(s.LogEntries()) > NumberOfLogEntriesAfterSnapshot*2 {
+		s.routineGroup.Add(1)
+		go func() {
+			defer s.routineGroup.Done()
+			if err := s.TakeSnapshot(); err != nil {
+				s.debugln("error create snapshot ", err)
+			}
+		}()
+	}
+}
 
 func (s *server) TakeSnapshot() error {
 	if s.stateMachine == nil {
