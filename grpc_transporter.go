@@ -300,6 +300,9 @@ func grpcDial(address string, opts ...grpc.DialOption) (*grpc.ClientConn, error)
 	var options []grpc.DialOption
 	options = append(options,
 		// grpc.WithInsecure(),
+		grpc.WithDefaultCallOptions(
+			grpc.WaitForReady(true),
+		),
 		grpc.WithKeepaliveParams(keepalive.ClientParameters{
 			Time:    30 * time.Second, // client ping server if no activity for this long
 			Timeout: 20 * time.Second,
