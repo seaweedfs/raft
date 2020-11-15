@@ -312,31 +312,32 @@ func grpcDial(address string, opts ...grpc.DialOption) (*grpc.ClientConn, error)
 	return grpc.Dial(address, options...)
 }
 
-func withCachedGrpcClient(fn func(*grpc.ClientConn) error, address string, opts ...grpc.DialOption) error {
+func getOrCreateConnection(address string, opts ...grpc.DialOption) (*grpc.ClientConn, error) {
 
 	grpcClientsLock.Lock()
+	defer grpcClientsLock.Unlock()
 
 	existingConnection, found := grpcClients[address]
 	if found {
-		grpcClientsLock.Unlock()
-		return fn(existingConnection)
+		return existingConnection, nil
 	}
 
 	grpcConnection, err := grpcDial(address, opts...)
 	if err != nil {
-		grpcClientsLock.Unlock()
-		return fmt.Errorf("fail to dial %s: %v", address, err)
+		return nil, fmt.Errorf("fail to dial %s: %v", address, err)
 	}
 
 	grpcClients[address] = grpcConnection
-	grpcClientsLock.Unlock()
 
-	err = fn(grpcConnection)
+	return grpcConnection, nil
+}
+
+func withCachedGrpcClient(fn func(*grpc.ClientConn) error, address string, opts ...grpc.DialOption) error {
+
+	grpcConnection, err := getOrCreateConnection(address, opts...)
 	if err != nil {
-		grpcClientsLock.Lock()
-		delete(grpcClients, address)
-		grpcClientsLock.Unlock()
+		return fmt.Errorf("getOrCreateConnection %s: %v", address, err)
 	}
+	return fn(grpcConnection)
 
-	return err
 }
