@@ -180,7 +180,7 @@ func (p *Peer) flush() {
 
 	if entries != nil {
 		p.sendAppendEntriesRequest(newAppendEntriesRequest(term, prevLogIndex, prevLogTerm, p.server.log.CommitIndex(), p.server.name, entries))
-	} else {
+	} else if p.server.snapshot != nil {
 		p.sendSnapshotRequest(newSnapshotRequest(p.server.name, p.server.snapshot))
 	}
 }
