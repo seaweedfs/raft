@@ -1296,7 +1296,8 @@ func (s *server) saveSnapshot() error {
 	s.snapshot = s.pendingSnapshot
 
 	// Delete the previous snapshot if there is any change
-	if tmp != nil && !(tmp.LastIndex == s.snapshot.LastIndex && tmp.LastTerm == s.snapshot.LastTerm) {
+	currentSnapshot := s.snapshot
+	if tmp != nil && currentSnapshot != nil && !(tmp.LastIndex == currentSnapshot.LastIndex && tmp.LastTerm == currentSnapshot.LastTerm) {
 		tmp.remove()
 	}
 	s.pendingSnapshot = nil
