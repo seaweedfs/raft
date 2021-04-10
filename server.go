@@ -1273,8 +1273,11 @@ func (s *server) TakeSnapshot() error {
 	// We do not want to send the whole snapshot to the slightly slow machines
 	if lastIndex-s.log.startIndex > NumberOfLogEntriesAfterSnapshot {
 		compactIndex := lastIndex - NumberOfLogEntriesAfterSnapshot
-		compactTerm := s.log.getEntry(compactIndex).Term()
-		s.log.compact(compactIndex, compactTerm)
+		entry := s.log.getEntry(compactIndex)
+		if entry.pb != nil {
+			compactTerm := entry.Term()
+			s.log.compact(compactIndex, compactTerm)
+		}
 	}
 
 	return nil
