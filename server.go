@@ -533,7 +533,7 @@ func (s *server) Stop() {
 func (s *server) Running() bool {
 	s.mutex.RLock()
 	defer s.mutex.RUnlock()
-	return (s.state != Stopped && s.state != Initialized)
+	return s.state != Stopped && s.state != Initialized
 }
 
 //--------------------------------------
@@ -1274,7 +1274,7 @@ func (s *server) TakeSnapshot() error {
 	if lastIndex-s.log.startIndex > NumberOfLogEntriesAfterSnapshot {
 		compactIndex := lastIndex - NumberOfLogEntriesAfterSnapshot
 		entry := s.log.getEntry(compactIndex)
-		if entry.pb != nil {
+		if entry != nil && entry.pb != nil {
 			compactTerm := entry.Term()
 			s.log.compact(compactIndex, compactTerm)
 		}
