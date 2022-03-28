@@ -661,7 +661,7 @@ func (s *server) sendAsync(value interface{}) {
 }
 
 func (s *server) checkQuorumActive(timeout time.Duration) bool {
-	s.debugln("check.quorum.active")
+	s.debugln("check.quorum.active with quorum size: ", s.QuorumSize(), " member count: ", s.MemberCount())
 	act := 1
 	now := time.Now()
 	for _, peer := range s.peers {
@@ -1267,7 +1267,9 @@ func (s *server) TakeSnapshot() error {
 	// Attach snapshot to pending snapshot and save it to disk.
 	s.pendingSnapshot.Peers = peers
 	s.pendingSnapshot.State = state
-	s.saveSnapshot()
+	if err := s.saveSnapshot(); err != nil {
+		return err
+	}
 
 	// We keep some log entries after the snapshot.
 	// We do not want to send the whole snapshot to the slightly slow machines
