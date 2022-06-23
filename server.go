@@ -1271,7 +1271,7 @@ func (s *server) TakeSnapshot() error {
 
 	// We keep some log entries after the snapshot.
 	// We do not want to send the whole snapshot to the slightly slow machines
-	if lastIndex-s.log.startIndex > NumberOfLogEntriesAfterSnapshot {
+	if lastIndex > NumberOfLogEntriesAfterSnapshot && lastIndex-s.log.startIndex > NumberOfLogEntriesAfterSnapshot {
 		compactIndex := lastIndex - NumberOfLogEntriesAfterSnapshot
 		entry := s.log.getEntry(compactIndex)
 		if entry != nil && entry.pb != nil {
