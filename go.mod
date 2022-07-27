@@ -1,4 +1,4 @@
-module github.com/chrislusf/raft
+module github.com/seaweedfs/raft
 
 go 1.14
 
