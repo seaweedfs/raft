@@ -8,8 +8,8 @@ import (
 	"io/ioutil"
 	"os"
 
-	"github.com/golang/protobuf/proto"
 	"github.com/seaweedfs/raft/protobuf"
+	"google.golang.org/protobuf/proto"
 )
 
 // Snapshot represents an in-memory representation of the current state of the system.

@@ -4,8 +4,8 @@ import (
 	"io"
 	"io/ioutil"
 
-	"github.com/golang/protobuf/proto"
 	"github.com/seaweedfs/raft/protobuf"
+	"google.golang.org/protobuf/proto"
 )
 
 // The request sent to a server to append entries to the log.
