@@ -579,9 +579,10 @@ func (l *Log) compact(index uint64, term uint64) error {
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
 
-	if index == 0 {
+	if index == 0 || index < l.startIndex {
 		return nil
 	}
+
 	// nothing to compaction
 	// the index may be greater than the current index if
 	// we just recovery from on snapshot
