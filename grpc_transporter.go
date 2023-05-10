@@ -31,6 +31,7 @@ func NewGrpcTransporter(grpcDialOptions ...grpc.DialOption) *GrpcTransporter {
 }
 
 type GrpcServer struct {
+	protobuf.UnimplementedRaftServer
 	server Server
 }
 
