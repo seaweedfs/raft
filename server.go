@@ -234,8 +234,8 @@ func (s *server) Path() string {
 
 // The name of the current leader.
 func (s *server) Leader() string {
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
 	return s.leader
 }
 
@@ -326,6 +326,8 @@ func (s *server) CommitIndex() uint64 {
 
 // Retrieves the name of the candidate this server voted for in this term.
 func (s *server) VotedFor() string {
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
 	return s.votedFor
 }
 
