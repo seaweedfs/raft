@@ -582,18 +582,21 @@ func (s *server) updateCurrentTerm(term uint64, leaderName string) {
 // Event Loop
 //--------------------------------------
 
-//               ________
-//            --|Snapshot|                 timeout
-//            |  --------                  ______
+//	   ________
+//	--|Snapshot|                 timeout
+//	|  --------                  ______
+//
 // recover    |       ^                   |      |
 // snapshot / |       |snapshot           |      |
 // higher     |       |                   v      |     recv majority votes
 // term       |    --------    timeout    -----------                        -----------
-//            |-> |Follower| ----------> | Candidate |--------------------> |  Leader   |
-//                 --------               -----------                        -----------
-//                    ^          higher term/ |                         higher term |
-//                    |            new leader |                                     |
-//                    |_______________________|____________________________________ |
+//
+//	|-> |Follower| ----------> | Candidate |--------------------> |  Leader   |
+//	     --------               -----------                        -----------
+//	        ^          higher term/ |                         higher term |
+//	        |            new leader |                                     |
+//	        |_______________________|____________________________________ |
+//
 // The main event loop for the server
 func (s *server) loop() {
 	defer s.debugln("server.loop.end")
@@ -677,8 +680,9 @@ func (s *server) checkQuorumActive(timeout time.Duration) bool {
 // The event loop that is run when the server is in a Follower state.
 // Responds to RPCs from candidates and leaders.
 // Converts to candidate if election timeout elapses without either:
-//   1.Receiving valid AppendEntries RPC, or
-//   2.Granting vote to candidate
+//
+//	1.Receiving valid AppendEntries RPC, or
+//	2.Granting vote to candidate
 func (s *server) followerLoop() {
 	since := time.Now()
 	electionTimeout := s.ElectionTimeout()
@@ -1079,10 +1083,10 @@ func (s *server) processAppendEntriesResponse(resp *AppendEntriesResponse) {
 }
 
 // processVoteReponse processes a vote request:
-// 1. if the vote is granted for the current term of the candidate, return true
-// 2. if the vote is denied due to smaller term, update the term of this server
-//    which will also cause the candidate to step-down, and return false.
-// 3. if the vote is for a smaller term, ignore it and return false.
+//  1. if the vote is granted for the current term of the candidate, return true
+//  2. if the vote is denied due to smaller term, update the term of this server
+//     which will also cause the candidate to step-down, and return false.
+//  3. if the vote is for a smaller term, ignore it and return false.
 func (s *server) processVoteResponse(resp *RequestVoteResponse) bool {
 	if resp.VoteGranted && resp.Term == s.currentTerm {
 		return true
@@ -1218,9 +1222,9 @@ func (s *server) RemovePeer(name string) error {
 	return nil
 }
 
-//--------------------------------------
+// --------------------------------------
 // Log compaction
-//--------------------------------------
+// --------------------------------------
 func (s *server) maybeTakeSnapshot() {
 	if s.stateMachine != nil && s.pendingSnapshot == nil && len(s.LogEntries()) > NumberOfLogEntriesAfterSnapshot*2 {
 		s.routineGroup.Add(1)
