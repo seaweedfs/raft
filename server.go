@@ -234,6 +234,8 @@ func (s *server) Path() string {
 
 // The name of the current leader.
 func (s *server) Leader() string {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
 	return s.leader
 }
 
@@ -548,7 +550,6 @@ func (s *server) updateCurrentTerm(term uint64, leaderName string) {
 
 	// Store previous values temporarily.
 	prevTerm := s.currentTerm
-	prevLeader := s.leader
 
 	// set currentTerm = T, convert to follower (§5.1)
 	// stop heartbeats before step-down
@@ -563,6 +564,7 @@ func (s *server) updateCurrentTerm(term uint64, leaderName string) {
 	}
 
 	s.mutex.Lock()
+	prevLeader := s.leader
 	s.currentTerm = term
 	s.leader = leaderName
 	s.votedFor = ""
@@ -571,8 +573,8 @@ func (s *server) updateCurrentTerm(term uint64, leaderName string) {
 	// Dispatch change events.
 	s.DispatchEvent(newEvent(TermChangeEventType, s.currentTerm, prevTerm))
 
-	if prevLeader != s.leader {
-		s.DispatchEvent(newEvent(LeaderChangeEventType, s.leader, prevLeader))
+	if prevLeader != leaderName {
+		s.DispatchEvent(newEvent(LeaderChangeEventType, leaderName, prevLeader))
 	}
 }
 
@@ -742,11 +744,13 @@ func (s *server) followerLoop() {
 // The event loop that is run when the server is in a Candidate state.
 func (s *server) candidateLoop() {
 	// Clear leader value.
+	s.mutex.Lock()
 	prevLeader := s.leader
 	s.leader = ""
 	if prevLeader != s.leader {
 		s.DispatchEvent(newEvent(LeaderChangeEventType, s.leader, prevLeader))
 	}
+	s.mutex.Unlock()
 
 	lastLogIndex, lastLogTerm := s.log.lastInfo()
 	doVote := true
@@ -869,7 +873,9 @@ func (s *server) leaderLoop() {
 				}
 				wg.Wait()
 
+				s.mutex.Lock()
 				s.leader = ""
+				s.mutex.Unlock()
 				s.setState(Follower)
 			}
 		case e := <-s.c:
@@ -990,11 +996,13 @@ func (s *server) processAppendEntriesRequest(req *AppendEntriesRequest) (*Append
 
 		// discover new leader when candidate
 		// save leader name when follower
+		s.mutex.Lock()
 		prevLeader := s.leader
 		s.leader = req.LeaderName
 		if prevLeader != s.leader {
 			s.DispatchEvent(newEvent(LeaderChangeEventType, s.leader, prevLeader))
 		}
+		s.mutex.Unlock()
 
 	} else {
 		// Update term and leader.
