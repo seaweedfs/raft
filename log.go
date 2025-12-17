@@ -251,9 +251,13 @@ func (l *Log) getEntriesAfter(index uint64, maxLogEntriesPerRequest uint64) ([]*
 		return nil, 0
 	}
 
-	// Return an error if the index doesn't exist.
+	// Return nil if the index is beyond the end of log.
+	// This can happen after log compaction when a peer's prevLogIndex
+	// still points to an old index that no longer exists.
+	// Returning nil triggers snapshot fallback in the caller (peer.flush).
 	if index > (uint64(len(l.entries)) + l.startIndex) {
-		panic(fmt.Sprintf("raft: Index is beyond end of log: %v %v", len(l.entries), index))
+		traceln("log.entriesAfter.beyond: ", index, " ", l.startIndex, " ", len(l.entries))
+		return nil, 0
 	}
 
 	// If we're going from the beginning of the log then return the whole log.
