@@ -1,7 +1,8 @@
 package raft
 
 type Config struct {
-	CommitIndex uint64 `json:"commitIndex"`
-	// TODO decide what we need to store in peer struct
-	Peers []*Peer `json:"peers"`
+	CommitIndex uint64  `json:"commitIndex"`
+	Peers       []*Peer `json:"peers"`
+	CurrentTerm uint64  `json:"currentTerm,omitempty"`
+	VotedFor    string  `json:"votedFor,omitempty"`
 }
