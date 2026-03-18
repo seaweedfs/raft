@@ -581,7 +581,7 @@ func (s *server) updateCurrentTerm(term uint64, leaderName string) {
 	s.votedFor = ""
 	s.mutex.Unlock()
 
-	s.writeState()
+	s.writeState(term, "")
 
 	// Dispatch change events.
 	s.DispatchEvent(newEvent(TermChangeEventType, s.currentTerm, prevTerm))
@@ -772,9 +772,12 @@ func (s *server) candidateLoop() {
 	for s.State() == Candidate {
 		if doVote {
 			// Increment current term, vote for self.
+			s.mutex.Lock()
 			s.currentTerm++
 			s.votedFor = s.name
-			s.writeState()
+			currentTerm := s.currentTerm
+			s.mutex.Unlock()
+			s.writeState(currentTerm, s.name)
 
 			// Send RequestVote RPCs to all other servers.
 			respChan = make(chan *RequestVoteResponse, len(s.peers))
@@ -1149,10 +1152,13 @@ func (s *server) processRequestVoteRequest(req *RequestVoteRequest) (*RequestVot
 
 	// If we made it this far then cast a vote and reset our election time out.
 	s.debugln("server.rv.vote: ", s.name, " votes for", req.CandidateName, "at term", req.Term)
+	s.mutex.Lock()
 	s.votedFor = req.CandidateName
-	s.writeState()
+	currentTerm := s.currentTerm
+	s.mutex.Unlock()
+	s.writeState(currentTerm, req.CandidateName)
 
-	return newRequestVoteResponse(s.currentTerm, true), true
+	return newRequestVoteResponse(currentTerm, true), true
 }
 
 //--------------------------------------
@@ -1576,7 +1582,7 @@ func (s *server) readState() error {
 // before sending RequestVote RPCs (i.e., before starting an election).
 // Per the Raft paper §5.2, currentTerm and votedFor must be persisted
 // to prevent a node from voting twice in the same term after a restart.
-func (s *server) writeState() {
+func (s *server) writeState(currentTerm uint64, votedFor string) {
 	if s.path == "" {
 		return
 	}
@@ -1585,8 +1591,8 @@ func (s *server) writeState() {
 		CurrentTerm uint64 `json:"currentTerm"`
 		VotedFor    string `json:"votedFor"`
 	}{
-		CurrentTerm: s.currentTerm,
-		VotedFor:    s.votedFor,
+		CurrentTerm: currentTerm,
+		VotedFor:    votedFor,
 	})
 	if err != nil {
 		panic(fmt.Sprintf("raft: failed to marshal state: %v", err))
