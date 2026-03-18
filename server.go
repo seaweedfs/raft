@@ -665,7 +665,7 @@ func (s *server) checkQuorumActive(timeout time.Duration) bool {
 	act := 1
 	now := time.Now()
 	for _, peer := range s.peers {
-		if (now.Unix() - peer.LastActivity().Unix()) < int64(timeout.Seconds()) {
+		if now.Sub(peer.LastActivity()) < timeout {
 			act += 1
 		}
 	}
