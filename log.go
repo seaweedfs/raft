@@ -266,7 +266,7 @@ func (l *Log) getEntriesAfter(index uint64, maxLogEntriesPerRequest uint64) ([]*
 		return l.entries, l.startTerm
 	}
 
-	traceln("log.entriesAfter.partial: ", index, " ", l.entries[len(l.entries)-1].Index)
+	traceln("log.entriesAfter.partial: ", index, " ", l.entries[len(l.entries)-1].Index())
 
 	entries := l.entries[index-l.startIndex:]
 	length := len(entries)

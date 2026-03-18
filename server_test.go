@@ -243,7 +243,7 @@ func TestServerAppendEntries(t *testing.T) {
 	entries := []*LogEntry{e}
 	resp := s.AppendEntries(newAppendEntriesRequest(1, 0, 0, 0, "ldr", entries))
 	if resp.Term() != 1 || !resp.Success() {
-		t.Fatalf("AppendEntries failed: %v/%v", resp.Term, resp.Success)
+		t.Fatalf("AppendEntries failed: %v/%v", resp.Term(), resp.Success())
 	}
 	if index, term := s.(*server).log.commitInfo(); index != 0 || term != 0 {
 		t.Fatalf("Invalid commit info [IDX=%v, TERM=%v]", index, term)
@@ -255,7 +255,7 @@ func TestServerAppendEntries(t *testing.T) {
 	entries = []*LogEntry{e1, e2}
 	resp = s.AppendEntries(newAppendEntriesRequest(1, 1, 1, 1, "ldr", entries))
 	if resp.Term() != 1 || !resp.Success() {
-		t.Fatalf("AppendEntries failed: %v/%v", resp.Term, resp.Success)
+		t.Fatalf("AppendEntries failed: %v/%v", resp.Term(), resp.Success())
 	}
 	if index, term := s.(*server).log.commitInfo(); index != 1 || term != 1 {
 		t.Fatalf("Invalid commit info [IDX=%v, TERM=%v]", index, term)
@@ -264,7 +264,7 @@ func TestServerAppendEntries(t *testing.T) {
 	// Send zero entries and commit everything.
 	resp = s.AppendEntries(newAppendEntriesRequest(2, 3, 1, 3, "ldr", []*LogEntry{}))
 	if resp.Term() != 2 || !resp.Success() {
-		t.Fatalf("AppendEntries failed: %v/%v", resp.Term, resp.Success)
+		t.Fatalf("AppendEntries failed: %v/%v", resp.Term(), resp.Success())
 	}
 	if index, term := s.(*server).log.commitInfo(); index != 3 || term != 1 {
 		t.Fatalf("Invalid commit info [IDX=%v, TERM=%v]", index, term)
@@ -287,7 +287,7 @@ func TestServerAppendEntriesWithStaleTermsAreRejected(t *testing.T) {
 	entries := []*LogEntry{e}
 	resp := s.AppendEntries(newAppendEntriesRequest(1, 0, 0, 0, "ldr", entries))
 	if resp.Term() != 2 || resp.Success() {
-		t.Fatalf("AppendEntries should have failed: %v/%v", resp.Term, resp.Success)
+		t.Fatalf("AppendEntries should have failed: %v/%v", resp.Term(), resp.Success())
 	}
 	if index, term := s.(*server).log.commitInfo(); index != 0 || term != 0 {
 		t.Fatalf("Invalid commit info [IDX=%v, TERM=%v]", index, term)
@@ -306,7 +306,7 @@ func TestServerAppendEntriesRejectedIfAlreadyCommitted(t *testing.T) {
 	entries := []*LogEntry{e1, e2}
 	resp := s.AppendEntries(newAppendEntriesRequest(1, 0, 0, 2, "ldr", entries))
 	if resp.Term() != 1 || !resp.Success() {
-		t.Fatalf("AppendEntries failed: %v/%v", resp.Term, resp.Success)
+		t.Fatalf("AppendEntries failed: %v/%v", resp.Term(), resp.Success())
 	}
 
 	// Append entry again (post-commit).
@@ -314,7 +314,7 @@ func TestServerAppendEntriesRejectedIfAlreadyCommitted(t *testing.T) {
 	entries = []*LogEntry{e}
 	resp = s.AppendEntries(newAppendEntriesRequest(1, 2, 1, 1, "ldr", entries))
 	if resp.Term() != 1 || resp.Success() {
-		t.Fatalf("AppendEntries should have failed: %v/%v", resp.Term, resp.Success)
+		t.Fatalf("AppendEntries should have failed: %v/%v", resp.Term(), resp.Success())
 	}
 }
 
@@ -332,12 +332,12 @@ func TestServerAppendEntriesOverwritesUncommittedEntries(t *testing.T) {
 	entries := []*LogEntry{entry1, entry2}
 	resp := s.AppendEntries(newAppendEntriesRequest(1, 0, 0, 1, "ldr", entries))
 	if resp.Term() != 1 || !resp.Success() || s.(*server).log.commitIndex != 1 {
-		t.Fatalf("AppendEntries failed: %v/%v", resp.Term, resp.Success)
+		t.Fatalf("AppendEntries failed: %v/%v", resp.Term(), resp.Success())
 	}
 
 	for i, entry := range s.(*server).log.entries {
 		if entry.Term() != entries[i].Term() || entry.Index() != entries[i].Index() || !bytes.Equal(entry.Command(), entries[i].Command()) {
-			t.Fatalf("AppendEntries failed: %v/%v", resp.Term, resp.Success)
+			t.Fatalf("AppendEntries failed: %v/%v", resp.Term(), resp.Success())
 		}
 	}
 
@@ -345,13 +345,13 @@ func TestServerAppendEntriesOverwritesUncommittedEntries(t *testing.T) {
 	entries = []*LogEntry{entry3}
 	resp = s.AppendEntries(newAppendEntriesRequest(2, 1, 1, 2, "ldr", entries))
 	if resp.Term() != 2 || !resp.Success() || s.(*server).log.commitIndex != 2 {
-		t.Fatalf("AppendEntries should have succeeded: %v/%v", resp.Term, resp.Success)
+		t.Fatalf("AppendEntries should have succeeded: %v/%v", resp.Term(), resp.Success())
 	}
 
 	entries = []*LogEntry{entry1, entry3}
 	for i, entry := range s.(*server).log.entries {
 		if entry.Term() != entries[i].Term() || entry.Index() != entries[i].Index() || !bytes.Equal(entry.Command(), entries[i].Command()) {
-			t.Fatalf("AppendEntries failed: %v/%v", resp.Term, resp.Success)
+			t.Fatalf("AppendEntries failed: %v/%v", resp.Term(), resp.Success())
 		}
 	}
 }
