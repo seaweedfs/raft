@@ -24,7 +24,9 @@ func TestServerRequestVote(t *testing.T) {
 	}
 
 	defer server.Stop()
-	resp := server.RequestVote(newRequestVoteRequest(1, "foo", 1, 0))
+	// Use lastLogIndex=2 to account for the NOP entry that leaderLoop
+	// commits asynchronously after self-join.
+	resp := server.RequestVote(newRequestVoteRequest(1, "foo", 2, 0))
 	if resp.Term != 1 || !resp.VoteGranted {
 		t.Fatalf("Invalid request vote response: %v/%v", resp.Term, resp.VoteGranted)
 	}
@@ -39,9 +41,10 @@ func TestServerRequestVoteDeniedForStaleTerm(t *testing.T) {
 		t.Fatalf("Server %s unable to join: %v", s.Name(), err)
 	}
 
-	s.(*server).mutex.Lock()
-	s.(*server).currentTerm = 2
-	s.(*server).mutex.Unlock()
+	// Bump term to 2 through the event loop via AppendEntries from a
+	// "leader" at term 2. This avoids a data race from directly writing
+	// s.currentTerm while the event loop goroutine reads it.
+	s.AppendEntries(newAppendEntriesRequest(2, 0, 0, 0, "ldr", []*LogEntry{}))
 
 	defer s.Stop()
 	resp := s.RequestVote(newRequestVoteRequest(1, "foo", 1, 0))
@@ -62,15 +65,15 @@ func TestServerRequestVoteDeniedIfAlreadyVoted(t *testing.T) {
 		t.Fatalf("Server %s unable to join: %v", s.Name(), err)
 	}
 
-	s.(*server).mutex.Lock()
-	s.(*server).currentTerm = 2
-	s.(*server).mutex.Unlock()
+	// Bump term to 2 through the event loop to avoid data race.
+	s.AppendEntries(newAppendEntriesRequest(2, 0, 0, 0, "ldr", []*LogEntry{}))
 	defer s.Stop()
-	resp := s.RequestVote(newRequestVoteRequest(2, "foo", 1, 0))
+	// Use lastLogIndex=2 to account for join + NOP entries.
+	resp := s.RequestVote(newRequestVoteRequest(2, "foo", 2, 0))
 	if resp.Term != 2 || !resp.VoteGranted {
 		t.Fatalf("First vote should not have been denied")
 	}
-	resp = s.RequestVote(newRequestVoteRequest(2, "bar", 1, 0))
+	resp = s.RequestVote(newRequestVoteRequest(2, "bar", 2, 0))
 	if resp.Term != 2 || resp.VoteGranted {
 		t.Fatalf("Second vote should have been denied")
 	}
@@ -85,11 +88,8 @@ func TestServerRequestVoteApprovedIfAlreadyVotedInOlderTerm(t *testing.T) {
 		t.Fatalf("Server %s unable to join: %v", s.Name(), err)
 	}
 
-	time.Sleep(time.Millisecond * 100)
-
-	s.(*server).mutex.Lock()
-	s.(*server).currentTerm = 2
-	s.(*server).mutex.Unlock()
+	// Bump term to 2 through the event loop to avoid data race.
+	s.AppendEntries(newAppendEntriesRequest(2, 0, 0, 0, "ldr", []*LogEntry{}))
 	defer s.Stop()
 	resp := s.RequestVote(newRequestVoteRequest(2, "foo", 2, 1))
 	if resp.Term != 2 || !resp.VoteGranted || s.VotedFor() != "foo" {
@@ -243,7 +243,7 @@ func TestServerAppendEntries(t *testing.T) {
 	entries := []*LogEntry{e}
 	resp := s.AppendEntries(newAppendEntriesRequest(1, 0, 0, 0, "ldr", entries))
 	if resp.Term() != 1 || !resp.Success() {
-		t.Fatalf("AppendEntries failed: %v/%v", resp.Term, resp.Success)
+		t.Fatalf("AppendEntries failed: %v/%v", resp.Term(), resp.Success())
 	}
 	if index, term := s.(*server).log.commitInfo(); index != 0 || term != 0 {
 		t.Fatalf("Invalid commit info [IDX=%v, TERM=%v]", index, term)
@@ -255,7 +255,7 @@ func TestServerAppendEntries(t *testing.T) {
 	entries = []*LogEntry{e1, e2}
 	resp = s.AppendEntries(newAppendEntriesRequest(1, 1, 1, 1, "ldr", entries))
 	if resp.Term() != 1 || !resp.Success() {
-		t.Fatalf("AppendEntries failed: %v/%v", resp.Term, resp.Success)
+		t.Fatalf("AppendEntries failed: %v/%v", resp.Term(), resp.Success())
 	}
 	if index, term := s.(*server).log.commitInfo(); index != 1 || term != 1 {
 		t.Fatalf("Invalid commit info [IDX=%v, TERM=%v]", index, term)
@@ -264,7 +264,7 @@ func TestServerAppendEntries(t *testing.T) {
 	// Send zero entries and commit everything.
 	resp = s.AppendEntries(newAppendEntriesRequest(2, 3, 1, 3, "ldr", []*LogEntry{}))
 	if resp.Term() != 2 || !resp.Success() {
-		t.Fatalf("AppendEntries failed: %v/%v", resp.Term, resp.Success)
+		t.Fatalf("AppendEntries failed: %v/%v", resp.Term(), resp.Success())
 	}
 	if index, term := s.(*server).log.commitInfo(); index != 3 || term != 1 {
 		t.Fatalf("Invalid commit info [IDX=%v, TERM=%v]", index, term)
@@ -278,16 +278,15 @@ func TestServerAppendEntriesWithStaleTermsAreRejected(t *testing.T) {
 	s.Start()
 
 	defer s.Stop()
-	s.(*server).mutex.Lock()
-	s.(*server).currentTerm = 2
-	s.(*server).mutex.Unlock()
+	// Bump term to 2 through the event loop to avoid data race.
+	s.AppendEntries(newAppendEntriesRequest(2, 0, 0, 0, "ldr", []*LogEntry{}))
 
-	// Append single entry.
+	// Append single entry at stale term 1 — should be rejected.
 	e, _ := newLogEntry(nil, nil, 1, 1, &testCommand1{Val: "foo", I: 10})
 	entries := []*LogEntry{e}
 	resp := s.AppendEntries(newAppendEntriesRequest(1, 0, 0, 0, "ldr", entries))
 	if resp.Term() != 2 || resp.Success() {
-		t.Fatalf("AppendEntries should have failed: %v/%v", resp.Term, resp.Success)
+		t.Fatalf("AppendEntries should have failed: %v/%v", resp.Term(), resp.Success())
 	}
 	if index, term := s.(*server).log.commitInfo(); index != 0 || term != 0 {
 		t.Fatalf("Invalid commit info [IDX=%v, TERM=%v]", index, term)
@@ -306,7 +305,7 @@ func TestServerAppendEntriesRejectedIfAlreadyCommitted(t *testing.T) {
 	entries := []*LogEntry{e1, e2}
 	resp := s.AppendEntries(newAppendEntriesRequest(1, 0, 0, 2, "ldr", entries))
 	if resp.Term() != 1 || !resp.Success() {
-		t.Fatalf("AppendEntries failed: %v/%v", resp.Term, resp.Success)
+		t.Fatalf("AppendEntries failed: %v/%v", resp.Term(), resp.Success())
 	}
 
 	// Append entry again (post-commit).
@@ -314,7 +313,7 @@ func TestServerAppendEntriesRejectedIfAlreadyCommitted(t *testing.T) {
 	entries = []*LogEntry{e}
 	resp = s.AppendEntries(newAppendEntriesRequest(1, 2, 1, 1, "ldr", entries))
 	if resp.Term() != 1 || resp.Success() {
-		t.Fatalf("AppendEntries should have failed: %v/%v", resp.Term, resp.Success)
+		t.Fatalf("AppendEntries should have failed: %v/%v", resp.Term(), resp.Success())
 	}
 }
 
@@ -332,12 +331,12 @@ func TestServerAppendEntriesOverwritesUncommittedEntries(t *testing.T) {
 	entries := []*LogEntry{entry1, entry2}
 	resp := s.AppendEntries(newAppendEntriesRequest(1, 0, 0, 1, "ldr", entries))
 	if resp.Term() != 1 || !resp.Success() || s.(*server).log.commitIndex != 1 {
-		t.Fatalf("AppendEntries failed: %v/%v", resp.Term, resp.Success)
+		t.Fatalf("AppendEntries failed: %v/%v", resp.Term(), resp.Success())
 	}
 
 	for i, entry := range s.(*server).log.entries {
 		if entry.Term() != entries[i].Term() || entry.Index() != entries[i].Index() || !bytes.Equal(entry.Command(), entries[i].Command()) {
-			t.Fatalf("AppendEntries failed: %v/%v", resp.Term, resp.Success)
+			t.Fatalf("AppendEntries failed: %v/%v", resp.Term(), resp.Success())
 		}
 	}
 
@@ -345,13 +344,13 @@ func TestServerAppendEntriesOverwritesUncommittedEntries(t *testing.T) {
 	entries = []*LogEntry{entry3}
 	resp = s.AppendEntries(newAppendEntriesRequest(2, 1, 1, 2, "ldr", entries))
 	if resp.Term() != 2 || !resp.Success() || s.(*server).log.commitIndex != 2 {
-		t.Fatalf("AppendEntries should have succeeded: %v/%v", resp.Term, resp.Success)
+		t.Fatalf("AppendEntries should have succeeded: %v/%v", resp.Term(), resp.Success())
 	}
 
 	entries = []*LogEntry{entry1, entry3}
 	for i, entry := range s.(*server).log.entries {
 		if entry.Term() != entries[i].Term() || entry.Index() != entries[i].Index() || !bytes.Equal(entry.Command(), entries[i].Command()) {
-			t.Fatalf("AppendEntries failed: %v/%v", resp.Term, resp.Success)
+			t.Fatalf("AppendEntries failed: %v/%v", resp.Term(), resp.Success())
 		}
 	}
 }
@@ -498,6 +497,100 @@ func TestServerRecoverFromPreviousLogAndConf(t *testing.T) {
 			t.Fatalf("%s commitIndex is invalid [%d/%d]", name, s.CommitIndex(), 17)
 		}
 		s.Stop()
+	}
+}
+
+// Ensure that a server's currentTerm and votedFor survive a restart,
+// preventing a double-vote in the same term that could cause split-brain.
+func TestServerVoteStatePersistsAcrossRestart(t *testing.T) {
+	s := newTestServer("1", &testTransporter{})
+	serverPath := s.Path()
+
+	s.Start()
+	if _, err := s.Do(&DefaultJoinCommand{Name: s.Name()}); err != nil {
+		t.Fatalf("Server %s unable to join: %v", s.Name(), err)
+	}
+
+	// Vote for candidate "A" at term 5.
+	resp := s.RequestVote(newRequestVoteRequest(5, "A", 3, 5))
+	if !resp.VoteGranted {
+		t.Fatalf("Vote should have been granted to A")
+	}
+	if s.Term() != 5 {
+		t.Fatalf("Term should be 5, got %v", s.Term())
+	}
+	if s.VotedFor() != "A" {
+		t.Fatalf("VotedFor should be A, got %v", s.VotedFor())
+	}
+
+	// Simulate crash/restart: stop the server and create a new one
+	// at the same path (preserving on-disk state).
+	s.Stop()
+
+	s2 := newTestServerWithPath("1", &testTransporter{}, serverPath)
+	s2.Start()
+	defer s2.Stop()
+
+	// Verify term and votedFor survived the restart.
+	if s2.Term() != 5 {
+		t.Fatalf("After restart, term should be 5, got %v", s2.Term())
+	}
+	if s2.VotedFor() != "A" {
+		t.Fatalf("After restart, votedFor should be A, got %v", s2.VotedFor())
+	}
+
+	// A second candidate "B" requests a vote at the same term 5.
+	// This MUST be denied — granting it would allow two leaders in term 5.
+	resp = s2.RequestVote(newRequestVoteRequest(5, "B", 3, 5))
+	if resp.VoteGranted {
+		t.Fatalf("Vote for B at term 5 should have been denied (already voted for A)")
+	}
+
+	// Voting for the SAME candidate "A" again at term 5 should still succeed.
+	resp = s2.RequestVote(newRequestVoteRequest(5, "A", 3, 5))
+	if !resp.VoteGranted {
+		t.Fatalf("Re-vote for A at term 5 should have been granted")
+	}
+
+	// A vote at a HIGHER term should be granted (new term, new election).
+	resp = s2.RequestVote(newRequestVoteRequest(6, "B", 3, 5))
+	if !resp.VoteGranted {
+		t.Fatalf("Vote for B at term 6 should have been granted")
+	}
+	if s2.VotedFor() != "B" {
+		t.Fatalf("VotedFor should be B after term 6 vote, got %v", s2.VotedFor())
+	}
+}
+
+// Ensure that currentTerm incremented during candidateLoop (without any log
+// entries written) survives a restart. Without this, a restarted node could
+// start an election at a stale term.
+func TestServerTermPersistsWithoutLogEntries(t *testing.T) {
+	s := newTestServer("1", &testTransporter{})
+	serverPath := s.Path()
+
+	s.Start()
+	if _, err := s.Do(&DefaultJoinCommand{Name: s.Name()}); err != nil {
+		t.Fatalf("Server %s unable to join: %v", s.Name(), err)
+	}
+
+	// Simulate receiving a vote request at a high term (no log entries at
+	// this term will be written).
+	resp := s.RequestVote(newRequestVoteRequest(100, "A", 3, 100))
+	if !resp.VoteGranted {
+		t.Fatalf("Vote should have been granted")
+	}
+
+	s.Stop()
+
+	// Restart and verify the high term is preserved even though no log
+	// entries exist at term 100.
+	s2 := newTestServerWithPath("1", &testTransporter{}, serverPath)
+	s2.Start()
+	defer s2.Stop()
+
+	if s2.Term() != 100 {
+		t.Fatalf("After restart, term should be 100, got %v", s2.Term())
 	}
 }
 

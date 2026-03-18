@@ -501,14 +501,27 @@ func (s *server) Init() error {
 		return fmt.Errorf("raft: Initialization error: %s", err)
 	}
 
+	// Read persisted vote state (currentTerm, votedFor). This overrides
+	// any values loaded from the conf file.
+	if err := s.readState(); err != nil {
+		s.debugln("raft: State file error: ", err)
+		return fmt.Errorf("raft: Initialization error: %s", err)
+	}
+
 	// Initialize the log and load it up.
 	if err := s.log.open(s.LogPath()); err != nil {
 		s.debugln("raft: Log error: ", err)
 		return fmt.Errorf("raft: Initialization error: %s", err)
 	}
 
-	// Update the term to the last term in the log.
-	_, s.currentTerm = s.log.lastInfo()
+	// Update the term to the last term in the log, but keep the
+	// persisted currentTerm if it is higher (the term may have been
+	// incremented during an election without any log entries written).
+	_, logTerm := s.log.lastInfo()
+	if logTerm > s.currentTerm {
+		s.currentTerm = logTerm
+		s.votedFor = ""
+	}
 
 	s.state = Initialized
 	return nil
@@ -567,6 +580,8 @@ func (s *server) updateCurrentTerm(term uint64, leaderName string) {
 	s.leader = leaderName
 	s.votedFor = ""
 	s.mutex.Unlock()
+
+	s.writeState(term, "")
 
 	// Dispatch change events.
 	s.DispatchEvent(newEvent(TermChangeEventType, s.currentTerm, prevTerm))
@@ -665,7 +680,7 @@ func (s *server) checkQuorumActive(timeout time.Duration) bool {
 	act := 1
 	now := time.Now()
 	for _, peer := range s.peers {
-		if (now.Unix() - peer.LastActivity().Unix()) < int64(timeout.Seconds()) {
+		if now.Sub(peer.LastActivity()) < timeout {
 			act += 1
 		}
 	}
@@ -757,16 +772,21 @@ func (s *server) candidateLoop() {
 	for s.State() == Candidate {
 		if doVote {
 			// Increment current term, vote for self.
+			s.mutex.Lock()
 			s.currentTerm++
 			s.votedFor = s.name
+			currentTerm := s.currentTerm
+			s.mutex.Unlock()
+			s.writeState(currentTerm, s.name)
 
 			// Send RequestVote RPCs to all other servers.
 			respChan = make(chan *RequestVoteResponse, len(s.peers))
+			candidate := s.name
 			for _, peer := range s.peers {
 				s.routineGroup.Add(1)
 				go func(peer *Peer) {
 					defer s.routineGroup.Done()
-					peer.sendVoteRequest(newRequestVoteRequest(s.currentTerm, s.name, lastLogIndex, lastLogTerm), respChan)
+					peer.sendVoteRequest(newRequestVoteRequest(currentTerm, candidate, lastLogIndex, lastLogTerm), respChan)
 				}(peer)
 			}
 
@@ -1133,9 +1153,13 @@ func (s *server) processRequestVoteRequest(req *RequestVoteRequest) (*RequestVot
 
 	// If we made it this far then cast a vote and reset our election time out.
 	s.debugln("server.rv.vote: ", s.name, " votes for", req.CandidateName, "at term", req.Term)
+	s.mutex.Lock()
 	s.votedFor = req.CandidateName
+	currentTerm := s.currentTerm
+	s.mutex.Unlock()
+	s.writeState(currentTerm, req.CandidateName)
 
-	return newRequestVoteResponse(s.currentTerm, true), true
+	return newRequestVoteResponse(currentTerm, true), true
 }
 
 //--------------------------------------
@@ -1474,6 +1498,8 @@ func (s *server) writeConf() {
 	r := &Config{
 		CommitIndex: s.log.commitIndex,
 		Peers:       peers,
+		CurrentTerm: s.currentTerm,
+		VotedFor:    s.votedFor,
 	}
 
 	b, err := json.Marshal(r)
@@ -1515,7 +1541,85 @@ func (s *server) readConf() error {
 
 	s.log.updateCommitIndex(conf.CommitIndex)
 
+	// Load persisted currentTerm and votedFor from conf for backwards
+	// compatibility. These will be overridden by the state file if present.
+	s.currentTerm = conf.CurrentTerm
+	s.votedFor = conf.VotedFor
+
 	return nil
+}
+
+// readState loads persisted currentTerm and votedFor from the state file.
+func (s *server) readState() error {
+	statePath := path.Join(s.path, "state")
+
+	b, err := ioutil.ReadFile(statePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			// State file may not exist on first run or on upgrade from
+			// a version that did not persist state. This is not an error.
+			return nil
+		}
+		return err
+	}
+
+	state := &struct {
+		CurrentTerm uint64 `json:"currentTerm"`
+		VotedFor    string `json:"votedFor"`
+	}{}
+
+	if err = json.Unmarshal(b, state); err != nil {
+		return err
+	}
+
+	s.currentTerm = state.CurrentTerm
+	s.votedFor = state.VotedFor
+
+	return nil
+}
+
+// writeState persists currentTerm and votedFor to stable storage.
+// This must be called before responding to RequestVote RPCs and
+// before sending RequestVote RPCs (i.e., before starting an election).
+// Per the Raft paper §5.2, currentTerm and votedFor must be persisted
+// to prevent a node from voting twice in the same term after a restart.
+func (s *server) writeState(currentTerm uint64, votedFor string) {
+	if s.path == "" {
+		return
+	}
+
+	b, err := json.Marshal(&struct {
+		CurrentTerm uint64 `json:"currentTerm"`
+		VotedFor    string `json:"votedFor"`
+	}{
+		CurrentTerm: currentTerm,
+		VotedFor:    votedFor,
+	})
+	if err != nil {
+		panic(fmt.Sprintf("raft: failed to marshal state: %v", err))
+	}
+
+	statePath := path.Join(s.path, "state")
+	tmpStatePath := path.Join(s.path, "state.tmp")
+
+	if err := writeFileSynced(tmpStatePath, b, 0600); err != nil {
+		panic(fmt.Sprintf("raft: failed to write state: %v", err))
+	}
+	if err := os.Rename(tmpStatePath, statePath); err != nil {
+		panic(fmt.Sprintf("raft: failed to rename state: %v", err))
+	}
+	if err := syncDir(s.path); err != nil {
+		panic(fmt.Sprintf("raft: failed to sync state dir: %v", err))
+	}
+}
+
+func syncDir(dir string) error {
+	f, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	return f.Sync()
 }
 
 //--------------------------------------
