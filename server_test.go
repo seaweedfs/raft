@@ -41,9 +41,10 @@ func TestServerRequestVoteDeniedForStaleTerm(t *testing.T) {
 		t.Fatalf("Server %s unable to join: %v", s.Name(), err)
 	}
 
-	s.(*server).mutex.Lock()
-	s.(*server).currentTerm = 2
-	s.(*server).mutex.Unlock()
+	// Bump term to 2 through the event loop via AppendEntries from a
+	// "leader" at term 2. This avoids a data race from directly writing
+	// s.currentTerm while the event loop goroutine reads it.
+	s.AppendEntries(newAppendEntriesRequest(2, 0, 0, 0, "ldr", []*LogEntry{}))
 
 	defer s.Stop()
 	resp := s.RequestVote(newRequestVoteRequest(1, "foo", 1, 0))
@@ -64,10 +65,8 @@ func TestServerRequestVoteDeniedIfAlreadyVoted(t *testing.T) {
 		t.Fatalf("Server %s unable to join: %v", s.Name(), err)
 	}
 
-	time.Sleep(testHeartbeatInterval) // let NOP settle
-	s.(*server).mutex.Lock()
-	s.(*server).currentTerm = 2
-	s.(*server).mutex.Unlock()
+	// Bump term to 2 through the event loop to avoid data race.
+	s.AppendEntries(newAppendEntriesRequest(2, 0, 0, 0, "ldr", []*LogEntry{}))
 	defer s.Stop()
 	// Use lastLogIndex=2 to account for join + NOP entries.
 	resp := s.RequestVote(newRequestVoteRequest(2, "foo", 2, 0))
@@ -89,11 +88,8 @@ func TestServerRequestVoteApprovedIfAlreadyVotedInOlderTerm(t *testing.T) {
 		t.Fatalf("Server %s unable to join: %v", s.Name(), err)
 	}
 
-	time.Sleep(time.Millisecond * 100)
-
-	s.(*server).mutex.Lock()
-	s.(*server).currentTerm = 2
-	s.(*server).mutex.Unlock()
+	// Bump term to 2 through the event loop to avoid data race.
+	s.AppendEntries(newAppendEntriesRequest(2, 0, 0, 0, "ldr", []*LogEntry{}))
 	defer s.Stop()
 	resp := s.RequestVote(newRequestVoteRequest(2, "foo", 2, 1))
 	if resp.Term != 2 || !resp.VoteGranted || s.VotedFor() != "foo" {
@@ -282,11 +278,10 @@ func TestServerAppendEntriesWithStaleTermsAreRejected(t *testing.T) {
 	s.Start()
 
 	defer s.Stop()
-	s.(*server).mutex.Lock()
-	s.(*server).currentTerm = 2
-	s.(*server).mutex.Unlock()
+	// Bump term to 2 through the event loop to avoid data race.
+	s.AppendEntries(newAppendEntriesRequest(2, 0, 0, 0, "ldr", []*LogEntry{}))
 
-	// Append single entry.
+	// Append single entry at stale term 1 — should be rejected.
 	e, _ := newLogEntry(nil, nil, 1, 1, &testCommand1{Val: "foo", I: 10})
 	entries := []*LogEntry{e}
 	resp := s.AppendEntries(newAppendEntriesRequest(1, 0, 0, 0, "ldr", entries))
