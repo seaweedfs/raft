@@ -14,16 +14,21 @@ func TestSnapshot(t *testing.T) {
 		m.On("Save").Return([]byte("foo"), nil)
 		m.On("Recovery", []byte("foo")).Return(nil)
 
+		// After self-join, leaderLoop commits a NOP entry asynchronously.
+		// Wait for it to settle so log indices are deterministic:
+		// index 1 = DefaultJoinCommand, index 2 = NOP.
+		time.Sleep(testHeartbeatInterval)
+
 		s.Do(&testCommand1{})
 		err := s.TakeSnapshot()
 		assert.NoError(t, err)
-		assert.Equal(t, s.(*server).snapshot.LastIndex, uint64(2))
+		assert.Equal(t, uint64(3), s.(*server).snapshot.LastIndex)
 
 		// Repeat to make sure new snapshot gets created.
 		s.Do(&testCommand1{})
 		err = s.TakeSnapshot()
 		assert.NoError(t, err)
-		assert.Equal(t, s.(*server).snapshot.LastIndex, uint64(4))
+		assert.Equal(t, uint64(4), s.(*server).snapshot.LastIndex)
 
 		// Restart server.
 		s.Stop()
@@ -40,12 +45,14 @@ func TestSnapshotRecovery(t *testing.T) {
 		m.On("Save").Return([]byte("foo"), nil)
 		m.On("Recovery", []byte("foo")).Return(nil)
 
+		time.Sleep(testHeartbeatInterval) // let NOP settle
+
 		s.Do(&testCommand1{})
 		err := s.TakeSnapshot()
 		assert.NoError(t, err)
-		assert.Equal(t, s.(*server).snapshot.LastIndex, uint64(2))
+		assert.Equal(t, uint64(3), s.(*server).snapshot.LastIndex)
 
-		// Repeat to make sure new snapshot gets created.
+		// Add one more command after the snapshot.
 		s.Do(&testCommand1{})
 
 		// Stop the old server
@@ -60,10 +67,11 @@ func TestSnapshotRecovery(t *testing.T) {
 		newS.Start()
 		defer newS.Stop()
 
-		// wait for it to become leader
+		// wait for it to become leader (and commit its own NOP)
 		time.Sleep(time.Second)
-		// ensure server load the previous log
-		assert.Equal(t, len(newS.LogEntries()), 3, "")
+		// After restart: snapshot covers up to index 3, log has entry 4
+		// from before restart, plus a new NOP from the new leader at index 5.
+		assert.Equal(t, 2, len(newS.LogEntries()))
 	})
 }
 

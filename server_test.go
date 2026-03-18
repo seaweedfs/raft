@@ -24,7 +24,9 @@ func TestServerRequestVote(t *testing.T) {
 	}
 
 	defer server.Stop()
-	resp := server.RequestVote(newRequestVoteRequest(1, "foo", 1, 0))
+	// Use lastLogIndex=2 to account for the NOP entry that leaderLoop
+	// commits asynchronously after self-join.
+	resp := server.RequestVote(newRequestVoteRequest(1, "foo", 2, 0))
 	if resp.Term != 1 || !resp.VoteGranted {
 		t.Fatalf("Invalid request vote response: %v/%v", resp.Term, resp.VoteGranted)
 	}
@@ -62,15 +64,17 @@ func TestServerRequestVoteDeniedIfAlreadyVoted(t *testing.T) {
 		t.Fatalf("Server %s unable to join: %v", s.Name(), err)
 	}
 
+	time.Sleep(testHeartbeatInterval) // let NOP settle
 	s.(*server).mutex.Lock()
 	s.(*server).currentTerm = 2
 	s.(*server).mutex.Unlock()
 	defer s.Stop()
-	resp := s.RequestVote(newRequestVoteRequest(2, "foo", 1, 0))
+	// Use lastLogIndex=2 to account for join + NOP entries.
+	resp := s.RequestVote(newRequestVoteRequest(2, "foo", 2, 0))
 	if resp.Term != 2 || !resp.VoteGranted {
 		t.Fatalf("First vote should not have been denied")
 	}
-	resp = s.RequestVote(newRequestVoteRequest(2, "bar", 1, 0))
+	resp = s.RequestVote(newRequestVoteRequest(2, "bar", 2, 0))
 	if resp.Term != 2 || resp.VoteGranted {
 		t.Fatalf("Second vote should have been denied")
 	}
