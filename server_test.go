@@ -505,6 +505,100 @@ func TestServerRecoverFromPreviousLogAndConf(t *testing.T) {
 	}
 }
 
+// Ensure that a server's currentTerm and votedFor survive a restart,
+// preventing a double-vote in the same term that could cause split-brain.
+func TestServerVoteStatePersistsAcrossRestart(t *testing.T) {
+	s := newTestServer("1", &testTransporter{})
+	serverPath := s.Path()
+
+	s.Start()
+	if _, err := s.Do(&DefaultJoinCommand{Name: s.Name()}); err != nil {
+		t.Fatalf("Server %s unable to join: %v", s.Name(), err)
+	}
+
+	// Vote for candidate "A" at term 5.
+	resp := s.RequestVote(newRequestVoteRequest(5, "A", 3, 5))
+	if !resp.VoteGranted {
+		t.Fatalf("Vote should have been granted to A")
+	}
+	if s.Term() != 5 {
+		t.Fatalf("Term should be 5, got %v", s.Term())
+	}
+	if s.VotedFor() != "A" {
+		t.Fatalf("VotedFor should be A, got %v", s.VotedFor())
+	}
+
+	// Simulate crash/restart: stop the server and create a new one
+	// at the same path (preserving on-disk state).
+	s.Stop()
+
+	s2 := newTestServerWithPath("1", &testTransporter{}, serverPath)
+	s2.Start()
+	defer s2.Stop()
+
+	// Verify term and votedFor survived the restart.
+	if s2.Term() != 5 {
+		t.Fatalf("After restart, term should be 5, got %v", s2.Term())
+	}
+	if s2.VotedFor() != "A" {
+		t.Fatalf("After restart, votedFor should be A, got %v", s2.VotedFor())
+	}
+
+	// A second candidate "B" requests a vote at the same term 5.
+	// This MUST be denied — granting it would allow two leaders in term 5.
+	resp = s2.RequestVote(newRequestVoteRequest(5, "B", 3, 5))
+	if resp.VoteGranted {
+		t.Fatalf("Vote for B at term 5 should have been denied (already voted for A)")
+	}
+
+	// Voting for the SAME candidate "A" again at term 5 should still succeed.
+	resp = s2.RequestVote(newRequestVoteRequest(5, "A", 3, 5))
+	if !resp.VoteGranted {
+		t.Fatalf("Re-vote for A at term 5 should have been granted")
+	}
+
+	// A vote at a HIGHER term should be granted (new term, new election).
+	resp = s2.RequestVote(newRequestVoteRequest(6, "B", 3, 5))
+	if !resp.VoteGranted {
+		t.Fatalf("Vote for B at term 6 should have been granted")
+	}
+	if s2.VotedFor() != "B" {
+		t.Fatalf("VotedFor should be B after term 6 vote, got %v", s2.VotedFor())
+	}
+}
+
+// Ensure that currentTerm incremented during candidateLoop (without any log
+// entries written) survives a restart. Without this, a restarted node could
+// start an election at a stale term.
+func TestServerTermPersistsWithoutLogEntries(t *testing.T) {
+	s := newTestServer("1", &testTransporter{})
+	serverPath := s.Path()
+
+	s.Start()
+	if _, err := s.Do(&DefaultJoinCommand{Name: s.Name()}); err != nil {
+		t.Fatalf("Server %s unable to join: %v", s.Name(), err)
+	}
+
+	// Simulate receiving a vote request at a high term (no log entries at
+	// this term will be written).
+	resp := s.RequestVote(newRequestVoteRequest(100, "A", 3, 100))
+	if !resp.VoteGranted {
+		t.Fatalf("Vote should have been granted")
+	}
+
+	s.Stop()
+
+	// Restart and verify the high term is preserved even though no log
+	// entries exist at term 100.
+	s2 := newTestServerWithPath("1", &testTransporter{}, serverPath)
+	s2.Start()
+	defer s2.Stop()
+
+	if s2.Term() != 100 {
+		t.Fatalf("After restart, term should be 100, got %v", s2.Term())
+	}
+}
+
 //--------------------------------------
 // Membership
 //--------------------------------------
