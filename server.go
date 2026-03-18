@@ -520,6 +520,7 @@ func (s *server) Init() error {
 	_, logTerm := s.log.lastInfo()
 	if logTerm > s.currentTerm {
 		s.currentTerm = logTerm
+		s.votedFor = ""
 	}
 
 	s.state = Initialized
@@ -1547,9 +1548,12 @@ func (s *server) readState() error {
 
 	b, err := ioutil.ReadFile(statePath)
 	if err != nil {
-		// State file may not exist on first run or on upgrade from
-		// a version that did not persist state. This is not an error.
-		return nil
+		if os.IsNotExist(err) {
+			// State file may not exist on first run or on upgrade from
+			// a version that did not persist state. This is not an error.
+			return nil
+		}
+		return err
 	}
 
 	state := &struct {
@@ -1573,13 +1577,20 @@ func (s *server) readState() error {
 // Per the Raft paper §5.2, currentTerm and votedFor must be persisted
 // to prevent a node from voting twice in the same term after a restart.
 func (s *server) writeState() {
-	b, _ := json.Marshal(&struct {
+	if s.path == "" {
+		return
+	}
+
+	b, err := json.Marshal(&struct {
 		CurrentTerm uint64 `json:"currentTerm"`
 		VotedFor    string `json:"votedFor"`
 	}{
 		CurrentTerm: s.currentTerm,
 		VotedFor:    s.votedFor,
 	})
+	if err != nil {
+		panic(fmt.Sprintf("raft: failed to marshal state: %v", err))
+	}
 
 	statePath := path.Join(s.path, "state")
 	tmpStatePath := path.Join(s.path, "state.tmp")
@@ -1590,6 +1601,18 @@ func (s *server) writeState() {
 	if err := os.Rename(tmpStatePath, statePath); err != nil {
 		panic(fmt.Sprintf("raft: failed to rename state: %v", err))
 	}
+	if err := syncDir(s.path); err != nil {
+		panic(fmt.Sprintf("raft: failed to sync state dir: %v", err))
+	}
+}
+
+func syncDir(dir string) error {
+	f, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	return f.Sync()
 }
 
 //--------------------------------------
