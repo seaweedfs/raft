@@ -781,11 +781,12 @@ func (s *server) candidateLoop() {
 
 			// Send RequestVote RPCs to all other servers.
 			respChan = make(chan *RequestVoteResponse, len(s.peers))
+			candidate := s.name
 			for _, peer := range s.peers {
 				s.routineGroup.Add(1)
 				go func(peer *Peer) {
 					defer s.routineGroup.Done()
-					peer.sendVoteRequest(newRequestVoteRequest(s.currentTerm, s.name, lastLogIndex, lastLogTerm), respChan)
+					peer.sendVoteRequest(newRequestVoteRequest(currentTerm, candidate, lastLogIndex, lastLogTerm), respChan)
 				}(peer)
 			}
 
