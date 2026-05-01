@@ -1613,15 +1613,6 @@ func (s *server) writeState(currentTerm uint64, votedFor string) {
 	}
 }
 
-func syncDir(dir string) error {
-	f, err := os.Open(dir)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	return f.Sync()
-}
-
 //--------------------------------------
 // Debugging
 //--------------------------------------
