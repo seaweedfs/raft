@@ -16,12 +16,17 @@ func TestHTTPTransporter(t *testing.T) {
 
 	servers := []Server{}
 	f0 := func(server Server, httpServer *http.Server) {
-		// Stop the leader and wait for an election.
+		// Stop the leader and wait for an election. How long one takes depends on
+		// randomised timeouts and on how busy the machine is, so wait for the
+		// outcome rather than assuming a couple of election timeouts covers it.
 		server.Stop()
-		time.Sleep(testElectionTimeout * 2)
 
-		if servers[1].State() != Leader && servers[2].State() != Leader {
-			t.Fatal("Expected re-election:", servers[1].State(), servers[2].State())
+		deadline := time.Now().Add(10 * time.Second)
+		for servers[1].State() != Leader && servers[2].State() != Leader {
+			if time.Now().After(deadline) {
+				t.Fatal("Expected re-election:", servers[1].State(), servers[2].State())
+			}
+			time.Sleep(10 * time.Millisecond)
 		}
 		server.Start()
 	}
