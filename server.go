@@ -1169,10 +1169,14 @@ func (s *server) processRequestVoteRequest(req *RequestVoteRequest) (*RequestVot
 
 // Adds a peer to the server.
 func (s *server) AddPeer(name string, connectiongString string) error {
-	s.debugln("server.peer.add: ", name, len(s.peers))
+	s.mutex.RLock()
+	existing, peerCount := s.peers[name], len(s.peers)
+	s.mutex.RUnlock()
+
+	s.debugln("server.peer.add: ", name, peerCount)
 
 	// Do not allow peers to be added twice.
-	if s.peers[name] != nil {
+	if existing != nil {
 		return nil
 	}
 
@@ -1184,7 +1188,9 @@ func (s *server) AddPeer(name string, connectiongString string) error {
 			peer.startHeartbeat()
 		}
 
+		s.mutex.Lock()
 		s.peers[peer.Name] = peer
+		s.mutex.Unlock()
 
 		s.DispatchEvent(newEvent(AddPeerEventType, name, nil))
 	}
@@ -1197,12 +1203,15 @@ func (s *server) AddPeer(name string, connectiongString string) error {
 
 // Removes a peer from the server.
 func (s *server) RemovePeer(name string) error {
-	s.debugln("server.peer.remove: ", name, len(s.peers))
+	s.mutex.RLock()
+	peer, peerCount := s.peers[name], len(s.peers)
+	s.mutex.RUnlock()
+
+	s.debugln("server.peer.remove: ", name, peerCount)
 
 	// Skip the Peer if it has the same name as the Server
 	if name != s.Name() {
 		// Return error if peer doesn't exist.
-		peer := s.peers[name]
 		if peer == nil {
 			return fmt.Errorf("raft: Peer not found: %s", name)
 		}
@@ -1224,7 +1233,9 @@ func (s *server) RemovePeer(name string) error {
 			}()
 		}
 
+		s.mutex.Lock()
 		delete(s.peers, name)
+		s.mutex.Unlock()
 
 		s.DispatchEvent(newEvent(RemovePeerEventType, name, nil))
 	}
@@ -1281,11 +1292,14 @@ func (s *server) TakeSnapshot() error {
 		return err
 	}
 
-	// Clone the list of peers.
+	// Clone the list of peers. This runs off the event loop, so it needs the lock
+	// that guards the map against AddPeer and RemovePeer.
+	s.mutex.RLock()
 	peers := make([]*Peer, 0, len(s.peers)+1)
 	for _, peer := range s.peers {
 		peers = append(peers, peer.clone())
 	}
+	s.mutex.RUnlock()
 	peers = append(peers, &Peer{Name: s.Name(), ConnectionString: s.connectionString})
 
 	snapshot := &Snapshot{lastIndex, lastTerm, peers, state, s.SnapshotPath(lastIndex, lastTerm)}
@@ -1411,7 +1425,9 @@ func (s *server) processSnapshotRecoveryRequest(req *SnapshotRecoveryRequest) *S
 	}
 
 	// Recover the cluster configuration.
+	s.mutex.Lock()
 	s.peers = make(map[string]*Peer)
+	s.mutex.Unlock()
 	for _, peer := range req.Peers {
 		s.AddPeer(peer.Name, peer.ConnectionString)
 	}
@@ -1534,6 +1550,7 @@ func (s *server) FlushCommitIndex() {
 
 func (s *server) writeConf() {
 
+	s.mutex.RLock()
 	peers := make([]*Peer, len(s.peers))
 
 	i := 0
@@ -1541,6 +1558,7 @@ func (s *server) writeConf() {
 		peers[i] = peer.clone()
 		i++
 	}
+	s.mutex.RUnlock()
 
 	r := &Config{
 		CommitIndex: s.log.commitIndex,
