@@ -7,6 +7,7 @@ import (
 	"io"
 	"io/ioutil"
 	"os"
+	"path"
 
 	"github.com/seaweedfs/raft/protobuf"
 	"google.golang.org/protobuf/proto"
@@ -51,15 +52,63 @@ type SnapshotResponse struct {
 	Success bool `json:"success"`
 }
 
-// save writes the snapshot to file.
+// save writes the snapshot to file and puts it in place.
 func (ss *Snapshot) save() error {
-	// Open the file for writing.
-	file, err := os.OpenFile(ss.Path, os.O_CREATE|os.O_WRONLY, 0600)
+	if err := ss.stage(); err != nil {
+		return err
+	}
+	if err := ss.commit(); err != nil {
+		ss.discard()
+		return err
+	}
+	return nil
+}
+
+// Where a snapshot is written before it takes its place on disk. The suffix
+// keeps it out of the snapshots LoadSnapshot picks from.
+func (ss *Snapshot) stagePath() string {
+	return ss.Path + ".tmp"
+}
+
+// stage writes the snapshot beside its own path, so whatever is already there
+// is left alone until commit puts this one there instead. A caller with a
+// fallible step before the snapshot may be installed stages it, and the file it
+// would replace survives an abandoned recovery intact.
+func (ss *Snapshot) stage() error {
+	file, err := os.OpenFile(ss.stagePath(), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
 	if err != nil {
 		return err
 	}
-	defer file.Close()
 
+	err = ss.write(file)
+	if closeErr := file.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		ss.discard()
+		return err
+	}
+
+	return nil
+}
+
+// commit puts a staged snapshot at its own path, replacing what was there. The
+// rename is flushed before this returns, since the log compaction that follows
+// it must not be the only part of a recovery to outlive a crash.
+func (ss *Snapshot) commit() error {
+	if err := os.Rename(ss.stagePath(), ss.Path); err != nil {
+		return err
+	}
+	return syncDir(path.Dir(ss.Path))
+}
+
+// discard drops a staged snapshot that will not be installed.
+func (ss *Snapshot) discard() {
+	os.Remove(ss.stagePath())
+}
+
+// write serializes the snapshot behind its checksum and flushes it to disk.
+func (ss *Snapshot) write(file *os.File) error {
 	// Serialize to JSON.
 	b, err := json.Marshal(ss)
 	if err != nil {
@@ -78,11 +127,13 @@ func (ss *Snapshot) save() error {
 	}
 
 	// Ensure that the snapshot has been flushed to disk before continuing.
-	if err := file.Sync(); err != nil {
-		return err
-	}
+	return file.Sync()
+}
 
-	return nil
+// Reports whether both snapshots cover the same point in the log, which is what
+// decides their path on disk.
+func (ss *Snapshot) sameAs(other *Snapshot) bool {
+	return ss.LastIndex == other.LastIndex && ss.LastTerm == other.LastTerm
 }
 
 // remove deletes the snapshot file.
