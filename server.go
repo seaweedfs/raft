@@ -57,6 +57,10 @@ var DuplicatePeerError = errors.New("raft.Server: Duplicate peer")
 var CommandTimeoutError = errors.New("raft: Command timeout")
 var StopError = errors.New("raft: Has been stopped")
 
+// ErrSnapshotInProgress is returned when a snapshot is asked for while another
+// one is still being written.
+var ErrSnapshotInProgress = errors.New("Snapshot: Last snapshot is not finished")
+
 //------------------------------------------------------------------------------
 //
 // Typedefs
@@ -131,11 +135,8 @@ type server struct {
 
 	snapshot *Snapshot
 
-	// PendingSnapshot is an unfinished snapshot.
-	// After the pendingSnapshot is saved to disk,
-	// it will be set to snapshot and also will be
-	// set to nil.
-	pendingSnapshot *Snapshot
+	// Held while a snapshot is being written, so only one is ever in flight.
+	snapshotMutex sync.Mutex
 
 	stateMachine            StateMachine
 	maxLogEntriesPerRequest uint64
@@ -1238,7 +1239,7 @@ func (s *server) RemovePeer(name string) error {
 // Log compaction
 //--------------------------------------
 func (s *server) maybeTakeSnapshot() {
-	if s.stateMachine != nil && s.pendingSnapshot == nil && len(s.LogEntries()) > NumberOfLogEntriesAfterSnapshot*2 {
+	if s.stateMachine != nil && len(s.LogEntries()) > NumberOfLogEntriesAfterSnapshot*2 {
 		s.routineGroup.Add(1)
 		go func() {
 			defer s.routineGroup.Done()
@@ -1254,11 +1255,14 @@ func (s *server) TakeSnapshot() error {
 		return errors.New("Snapshot: Cannot create snapshot. Missing state machine.")
 	}
 
-	// Shortcut without lock
-	// Exit if the server is currently creating a snapshot.
-	if s.pendingSnapshot != nil {
-		return errors.New("Snapshot: Last snapshot is not finished.")
+	// Exit if the server is currently creating a snapshot. The event loops ask
+	// for a snapshot on every iteration and callers may ask at any time, so
+	// without this gate several goroutines build one at once and whichever
+	// finishes first clears the shared state the others are still writing to.
+	if !s.snapshotMutex.TryLock() {
+		return ErrSnapshotInProgress
 	}
+	defer s.snapshotMutex.Unlock()
 
 	// TODO: acquire the lock and no more committed is allowed
 	// This will be done after finishing refactoring heartbeat
@@ -1272,10 +1276,6 @@ func (s *server) TakeSnapshot() error {
 		return nil
 	}
 
-	path := s.SnapshotPath(lastIndex, lastTerm)
-	// Attach snapshot to pending snapshot and save it to disk.
-	s.pendingSnapshot = &Snapshot{lastIndex, lastTerm, nil, nil, path}
-
 	state, err := s.stateMachine.Save()
 	if err != nil {
 		return err
@@ -1288,10 +1288,8 @@ func (s *server) TakeSnapshot() error {
 	}
 	peers = append(peers, &Peer{Name: s.Name(), ConnectionString: s.connectionString})
 
-	// Attach snapshot to pending snapshot and save it to disk.
-	s.pendingSnapshot.Peers = peers
-	s.pendingSnapshot.State = state
-	if err := s.saveSnapshot(); err != nil {
+	snapshot := &Snapshot{lastIndex, lastTerm, peers, state, s.SnapshotPath(lastIndex, lastTerm)}
+	if err := s.saveSnapshot(snapshot); err != nil {
 		return err
 	}
 
@@ -1309,29 +1307,33 @@ func (s *server) TakeSnapshot() error {
 	return nil
 }
 
-// Retrieves the log path for the server.
-func (s *server) saveSnapshot() error {
-	if s.pendingSnapshot == nil {
-		return errors.New("pendingSnapshot.is.nil")
+// Writes the snapshot to disk and makes it the current one.
+func (s *server) saveSnapshot(snapshot *Snapshot) error {
+	if snapshot == nil {
+		return errors.New("snapshot.is.nil")
 	}
 
 	// Write snapshot to disk.
-	if err := s.pendingSnapshot.save(); err != nil {
+	if err := snapshot.save(); err != nil {
 		return err
 	}
 
-	// Swap the current and last snapshots.
-	tmp := s.snapshot
-	s.snapshot = s.pendingSnapshot
-
-	// Delete the previous snapshot if there is any change
-	currentSnapshot := s.snapshot
-	if tmp != nil && currentSnapshot != nil && !(tmp.LastIndex == currentSnapshot.LastIndex && tmp.LastTerm == currentSnapshot.LastTerm) {
-		tmp.remove()
-	}
-	s.pendingSnapshot = nil
+	s.installSnapshot(snapshot)
 
 	return nil
+}
+
+// Makes a snapshot already written to disk the current one, and deletes the file
+// of the snapshot it replaces. Callers with a fallible step between writing and
+// installing use this directly, so a snapshot they abandon stays uninstalled.
+func (s *server) installSnapshot(snapshot *Snapshot) {
+	previous := s.snapshot
+	s.snapshot = snapshot
+
+	// Delete the previous snapshot if there is any change
+	if previous != nil && !previous.sameAs(snapshot) {
+		previous.remove()
+	}
 }
 
 // Retrieves the log path for the server.
@@ -1368,9 +1370,44 @@ func (s *server) SnapshotRecoveryRequest(req *SnapshotRecoveryRequest) *Snapshot
 }
 
 func (s *server) processSnapshotRecoveryRequest(req *SnapshotRecoveryRequest) *SnapshotRecoveryResponse {
-	// Recover state sent from request.
+	// Recovery replaces the state machine, peers and log that a snapshot is built
+	// from, so wait for any snapshot this server is writing on its own.
+	s.snapshotMutex.Lock()
+	defer s.snapshotMutex.Unlock()
+
+	// A recovery that does not run to the end has to leave this server able to
+	// come back from what is on disk, and must not be reported as done. Going
+	// back to follower lets the leader start the handshake again, which it cannot
+	// do while we sit in snapshotLoop: that loop has no case for a
+	// SnapshotRequest.
+	abort := func(step string, err error) *SnapshotRecoveryResponse {
+		s.debugln("snapshot.recovery.failed: ", step, err)
+		s.setState(Follower)
+		return newSnapshotRecoveryResponse(req.LastTerm, false, s.log.CommitIndex())
+	}
+
+	// Write the snapshot to one side, then put it in place, and only then drop the
+	// log it stands in for. Compacting first would leave a window where the
+	// entries are gone and the snapshot that replaces them is still off to the
+	// side, where a restart does not look for it. Staging keeps the snapshot
+	// already at this path whole until this one is complete, since a recovery
+	// covering the same point writes to that same path.
+	snapshot := &Snapshot{req.LastIndex, req.LastTerm, req.Peers, req.State, s.SnapshotPath(req.LastIndex, req.LastTerm)}
+	if err := snapshot.stage(); err != nil {
+		return abort("save", err)
+	}
+	if err := snapshot.commit(); err != nil {
+		snapshot.discard()
+		return abort("save", err)
+	}
+	s.installSnapshot(snapshot)
+
+	// Recover state sent from request. A state machine that will not take the
+	// snapshot leaves the entries it stands in for as the only thing this server
+	// can still serve from, so this has to answer for itself before the log goes,
+	// rather than bring the process down on top of a log that is already gone.
 	if err := s.stateMachine.Recovery(req.State); err != nil {
-		panic("cannot recover from previous state")
+		return abort("recovery", err)
 	}
 
 	// Recover the cluster configuration.
@@ -1381,14 +1418,15 @@ func (s *server) processSnapshotRecoveryRequest(req *SnapshotRecoveryRequest) *S
 
 	// Update log state.
 	s.currentTerm = req.LastTerm
+
+	// Clear the previous log entries. On failure they stay, which costs nothing:
+	// log.open skips whatever the snapshot already covers. The commit index has
+	// to wait for this, though, since one that reaches past the entries we still
+	// have makes commitInfo read off the end.
+	if err := s.log.compact(req.LastIndex, req.LastTerm); err != nil {
+		return abort("compact", err)
+	}
 	s.log.updateCommitIndex(req.LastIndex)
-
-	// Create local snapshot.
-	s.pendingSnapshot = &Snapshot{req.LastIndex, req.LastTerm, req.Peers, req.State, s.SnapshotPath(req.LastIndex, req.LastTerm)}
-	s.saveSnapshot()
-
-	// Clear the previous log entries.
-	s.log.compact(req.LastIndex, req.LastTerm)
 
 	return newSnapshotRecoveryResponse(req.LastTerm, true, req.LastIndex)
 }
@@ -1410,14 +1448,23 @@ func (s *server) LoadSnapshot() error {
 	}
 	dir.Close()
 
-	if len(filenames) == 0 {
+	// Keep only snapshots, so that a staged one, or anything else that ends up in
+	// the directory, is never loaded as the latest.
+	var names []string
+	for _, filename := range filenames {
+		if path.Ext(filename) == ".ss" {
+			names = append(names, filename)
+		}
+	}
+
+	if len(names) == 0 {
 		s.debugln("no.snapshot.to.load")
 		return nil
 	}
 
 	// Grab the latest snapshot.
-	sort.Strings(filenames)
-	snapshotPath := path.Join(s.path, "snapshot", filenames[len(filenames)-1])
+	sort.Strings(names)
+	snapshotPath := path.Join(s.path, "snapshot", names[len(names)-1])
 
 	// Read snapshot data.
 	file, err := os.OpenFile(snapshotPath, os.O_RDONLY, 0)
