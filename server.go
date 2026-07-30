@@ -1341,6 +1341,30 @@ func (s *server) SnapshotPath(lastIndex uint64, lastTerm uint64) string {
 	return path.Join(s.path, "snapshot", fmt.Sprintf("%v_%v.ss", lastTerm, lastIndex))
 }
 
+// Picks the snapshot covering the most of the log out of the names of a snapshot
+// directory, ignoring names that are not snapshots. Returns "" if none are.
+func latestSnapshotName(filenames []string) string {
+	var latest string
+	var latestTerm, latestIndex uint64
+
+	for _, filename := range filenames {
+		var term, index uint64
+		if n, err := fmt.Sscanf(filename, "%d_%d.ss", &term, &index); n != 2 || err != nil {
+			continue
+		}
+		// Sscanf stops at the end of the format and ignores whatever follows, so
+		// check the name is one we would have written and nothing more.
+		if fmt.Sprintf("%v_%v.ss", term, index) != filename {
+			continue
+		}
+		if latest == "" || index > latestIndex || (index == latestIndex && term > latestTerm) {
+			latest, latestTerm, latestIndex = filename, term, index
+		}
+	}
+
+	return latest
+}
+
 func (s *server) RequestSnapshot(req *SnapshotRequest) *SnapshotResponse {
 	ret, _ := s.send(req)
 	resp, _ := ret.(*SnapshotResponse)
@@ -1448,23 +1472,16 @@ func (s *server) LoadSnapshot() error {
 	}
 	dir.Close()
 
-	// Keep only snapshots, so that a staged one, or anything else that ends up in
-	// the directory, is never loaded as the latest.
-	var names []string
-	for _, filename := range filenames {
-		if path.Ext(filename) == ".ss" {
-			names = append(names, filename)
-		}
-	}
-
-	if len(names) == 0 {
+	// Grab the latest snapshot. The names carry the term and index they cover, so
+	// read those rather than comparing the names as text, under which "1_10.ss"
+	// comes before "1_9.ss". Names we would not have written are skipped, so a
+	// snapshot staged but never put in place is never loaded as the newest one.
+	latest := latestSnapshotName(filenames)
+	if latest == "" {
 		s.debugln("no.snapshot.to.load")
 		return nil
 	}
-
-	// Grab the latest snapshot.
-	sort.Strings(names)
-	snapshotPath := path.Join(s.path, "snapshot", names[len(names)-1])
+	snapshotPath := path.Join(s.path, "snapshot", latest)
 
 	// Read snapshot data.
 	file, err := os.OpenFile(snapshotPath, os.O_RDONLY, 0)
