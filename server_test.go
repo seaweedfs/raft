@@ -193,10 +193,15 @@ func TestServerPromoteSelf(t *testing.T) {
 	s.Start()
 	defer s.Stop()
 
-	time.Sleep(2 * testElectionTimeout)
-
-	if s.State() != Leader {
-		t.Fatalf("Server self-promotion failed: %v", s.State())
+	// The wait before a follower puts itself forward is randomised between one
+	// and two election timeouts, and the vote it grants itself still has to be
+	// counted, so wait for the outcome rather than for a fixed stretch of time.
+	deadline := time.Now().Add(5 * time.Second)
+	for s.State() != Leader {
+		if time.Now().After(deadline) {
+			t.Fatalf("Server self-promotion failed: %v", s.State())
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
 
@@ -374,6 +379,25 @@ func TestServerDenyCommandExecutionWhenFollower(t *testing.T) {
 // Recovery
 //--------------------------------------
 
+// Waits for a server to have committed up to an index. How long replication or
+// an election takes is not a fixed quantity, so a test that expects one to have
+// happened waits for it rather than for an interval that looks long enough.
+//
+// The wait is for at least the index, not exactly it: a further election adds
+// another no-op, so pinning the number pins how many elections the run had, and
+// what these tests are checking is that everyone caught up.
+func waitForCommitIndex(t *testing.T, name string, s Server, want uint64) {
+	t.Helper()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for s.CommitIndex() < want {
+		if time.Now().After(deadline) {
+			t.Fatalf("%s commitIndex is invalid [%d/%d]", name, s.CommitIndex(), want)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 // Ensure that a follower cannot execute a command.
 func TestServerRecoverFromPreviousLogAndConf(t *testing.T) {
 	// Initialize the servers.
@@ -455,14 +479,13 @@ func TestServerRecoverFromPreviousLogAndConf(t *testing.T) {
 		}
 	}
 
-	time.Sleep(2 * testHeartbeatInterval)
-
+	// Everyone has to catch up before any of them is stopped: stopping the leader
+	// first would leave the rest with nothing to catch up from.
 	for _, name := range names {
-		s := servers[name]
-		if s.CommitIndex() != 16 {
-			t.Fatalf("%s commitIndex is invalid [%d/%d]", name, s.CommitIndex(), 16)
-		}
-		s.Stop()
+		waitForCommitIndex(t, name, servers[name], 16)
+	}
+	for _, name := range names {
+		servers[name].Stop()
 	}
 
 	for _, name := range names {
@@ -488,15 +511,12 @@ func TestServerRecoverFromPreviousLogAndConf(t *testing.T) {
 		servers[name].SetTransporter(transporter)
 	}
 
-	time.Sleep(2 * testElectionTimeout)
-
 	// should commit to the previous index + 1(nop command when new leader elected)
 	for _, name := range names {
-		s := servers[name]
-		if s.CommitIndex() != 17 {
-			t.Fatalf("%s commitIndex is invalid [%d/%d]", name, s.CommitIndex(), 17)
-		}
-		s.Stop()
+		waitForCommitIndex(t, name, servers[name], 17)
+	}
+	for _, name := range names {
+		servers[name].Stop()
 	}
 }
 
