@@ -1001,7 +1001,26 @@ func (s *server) processAppendEntriesRequest(req *AppendEntriesRequest) (*Append
 	}
 
 	if req.Term == s.currentTerm {
-		_assert(s.State() != Leader, "leader.elected.at.same.term.%d\n", s.currentTerm)
+		// Two leaders in the same term violates Raft's safety guarantee
+		// (§5.1). The previous code panicked here via _assert, which is
+		// too aggressive for production: a stale AppendEntries from a
+		// previous incarnation (e.g. a single-node server that self-joined
+		// at term 0) can trigger it under hard-to-reproduce timing. Step
+		// down to Follower instead so the other leader prevails.
+		if s.State() == Leader {
+			s.debugln("server.ae.leader.step.down.same.term: ", s.currentTerm)
+			var wg sync.WaitGroup
+			for _, peer := range s.peers {
+				wg.Add(1)
+				go func(peer *Peer) {
+					defer wg.Done()
+					peer.stopHeartbeat(false)
+				}(peer)
+			}
+			wg.Wait()
+			s.leader = ""
+			s.setState(Follower)
+		}
 
 		// step-down to follower when it is a candidate
 		if s.state == Candidate {
