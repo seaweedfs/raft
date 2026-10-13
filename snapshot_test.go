@@ -112,3 +112,24 @@ func runServerWithMockStateMachine(state string, fn func(s Server, m *mock.Mock)
 	defer s.Stop()
 	fn(s, &m.Mock)
 }
+
+// Ensure that a follower that recovered from a snapshot can still campaign once
+// its leader goes quiet.
+func TestSnapshotRecoveryReturnsToFollower(t *testing.T) {
+	runServerWithMockStateMachine(Follower, func(s Server, m *mock.Mock) {
+		m.On("Recovery", []byte("bar")).Return(nil)
+
+		s.RequestSnapshot(&SnapshotRequest{LastIndex: 5, LastTerm: 1})
+		resp := s.SnapshotRecoveryRequest(&SnapshotRecoveryRequest{
+			LeaderName: "1",
+			LastIndex:  5,
+			LastTerm:   2,
+			Peers:      make([]*Peer, 0),
+			State:      []byte("bar"),
+		})
+		assert.True(t, resp.Success)
+		assert.Equal(t, Follower, s.State())
+
+		assert.Eventually(t, func() bool { return s.State() == Leader }, 5*testElectionTimeout, testHeartbeatInterval)
+	})
+}
