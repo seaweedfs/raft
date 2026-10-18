@@ -1475,8 +1475,20 @@ func (s *server) processSnapshotRecoveryRequest(req *SnapshotRecoveryRequest) *S
 		s.AddPeer(peer.Name, peer.ConnectionString)
 	}
 
-	// Update log state.
-	s.currentTerm = req.LastTerm
+	// Update log state. req.LastTerm is the snapshot's last log term, which can
+	// lag the current election term; adopt it only when it advances currentTerm
+	// (§5.1) so a recovered server never campaigns below a term it already saw.
+	s.mutex.Lock()
+	if req.LastTerm > s.currentTerm {
+		s.currentTerm = req.LastTerm
+		s.votedFor = ""
+	}
+	currentTerm, votedFor := s.currentTerm, s.votedFor
+	s.mutex.Unlock()
+
+	// Persist the retained term before compacting: the entries that raised it
+	// can be among the ones this recovery drops.
+	s.writeState(currentTerm, votedFor)
 
 	// Clear the previous log entries. On failure they stay, which costs nothing:
 	// log.open skips whatever the snapshot already covers. The commit index has
