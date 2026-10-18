@@ -1487,6 +1487,9 @@ func (s *server) processSnapshotRecoveryRequest(req *SnapshotRecoveryRequest) *S
 	}
 	s.log.updateCommitIndex(req.LastIndex)
 
+	// snapshotLoop has no election timer, so staying in it would stop this server from campaigning.
+	s.setState(Follower)
+
 	return newSnapshotRecoveryResponse(req.LastTerm, true, req.LastIndex)
 }
 
