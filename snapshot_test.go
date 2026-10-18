@@ -133,3 +133,31 @@ func TestSnapshotRecoveryReturnsToFollower(t *testing.T) {
 		assert.Eventually(t, func() bool { return s.State() == Leader }, 5*testElectionTimeout, testHeartbeatInterval)
 	})
 }
+
+// A snapshot's LastTerm is the term of its last log entry and can lag the
+// election term, so recovery must not rewind currentTerm.
+func TestSnapshotRecoveryKeepsCurrentTerm(t *testing.T) {
+	runServerWithMockStateMachine(Follower, func(s Server, m *mock.Mock) {
+		m.On("Recovery", []byte("bar")).Return(nil)
+
+		// A term observed but not yet persisted, like Init's raise from the log.
+		s.(*server).currentTerm = 9
+
+		s.RequestSnapshot(&SnapshotRequest{LastIndex: 5, LastTerm: 1})
+		resp := s.SnapshotRecoveryRequest(&SnapshotRecoveryRequest{
+			LeaderName: "1",
+			LastIndex:  5,
+			LastTerm:   2,
+			Peers:      make([]*Peer, 0),
+			State:      []byte("bar"),
+		})
+		assert.True(t, resp.Success)
+		assert.Equal(t, uint64(9), s.Term())
+
+		s2 := newTestServerWithPath("2", &testTransporter{}, s.Path())
+		assert.NoError(t, s2.(*server).readState())
+		assert.Equal(t, uint64(9), s2.Term())
+
+		assert.Eventually(t, func() bool { return s.State() == Leader && s.Term() == 10 }, 5*testElectionTimeout, testHeartbeatInterval)
+	})
+}
