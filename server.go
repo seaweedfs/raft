@@ -442,7 +442,7 @@ func init() {
 func (s *server) Start() error {
 	// Exit if the server is already running.
 	if s.Running() {
-		return fmt.Errorf("raft.Server: Server already running[%v]", s.state)
+		return fmt.Errorf("raft.Server: Server already running[%v]", s.State())
 	}
 
 	if err := s.Init(); err != nil {
@@ -483,14 +483,16 @@ func (s *server) Start() error {
 // Otherwise, Init() will load in the log entries from the log file.
 func (s *server) Init() error {
 	if s.Running() {
-		return fmt.Errorf("raft.Server: Server already running[%v]", s.state)
+		return fmt.Errorf("raft.Server: Server already running[%v]", s.State())
 	}
 
 	// Server has been initialized or server was stopped after initialized
 	// If log has been initialized, we know that the server was stopped after
 	// running.
-	if s.state == Initialized || s.log.initialized {
+	if s.State() == Initialized || s.log.initialized {
+		s.mutex.Lock()
 		s.state = Initialized
+		s.mutex.Unlock()
 		return nil
 	}
 
@@ -523,12 +525,13 @@ func (s *server) Init() error {
 	// persisted currentTerm if it is higher (the term may have been
 	// incremented during an election without any log entries written).
 	_, logTerm := s.log.lastInfo()
+	s.mutex.Lock()
 	if logTerm > s.currentTerm {
 		s.currentTerm = logTerm
 		s.votedFor = ""
 	}
-
 	s.state = Initialized
+	s.mutex.Unlock()
 	return nil
 }
 
@@ -1667,13 +1670,15 @@ func (s *server) writeConf() {
 		peers[i] = peer.clone()
 		i++
 	}
+	currentTerm := s.currentTerm
+	votedFor := s.votedFor
 	s.mutex.RUnlock()
 
 	r := &Config{
 		CommitIndex: s.log.commitIndex,
 		Peers:       peers,
-		CurrentTerm: s.currentTerm,
-		VotedFor:    s.votedFor,
+		CurrentTerm: currentTerm,
+		VotedFor:    votedFor,
 	}
 
 	b, err := json.Marshal(r)
