@@ -128,6 +128,10 @@ type server struct {
 	mutex      sync.RWMutex
 	syncedPeer map[string]bool
 
+	// lastLeaderContact is when a valid-term AppendEntries last arrived;
+	// within an election timeout of it a pre-vote is denied (leader lease).
+	lastLeaderContact time.Time
+
 	stopped           chan bool
 	c                 chan *ev
 	electionTimeout   time.Duration
@@ -766,19 +770,29 @@ func (s *server) candidateLoop() {
 
 	lastLogIndex, lastLogTerm := s.log.lastInfo()
 	doVote := true
+	prevote := true
 	votesGranted := 0
 	var timeoutChan <-chan time.Time
 	var respChan chan *RequestVoteResponse
 
 	for s.State() == Candidate {
 		if doVote {
-			// Increment current term, vote for self.
-			s.mutex.Lock()
-			s.currentTerm++
-			s.votedFor = s.name
-			currentTerm := s.currentTerm
-			s.mutex.Unlock()
-			s.writeState(currentTerm, s.name)
+			var voteTerm uint64
+			if prevote {
+				// PreVote (Raft thesis §9.6): ask for votes under the term
+				// the election would use, without raising it. A server cut
+				// off from a quorum loops here instead of inflating its
+				// term and deposing the healthy leader on rejoin.
+				voteTerm = s.currentTerm + 1
+			} else {
+				// Increment current term, vote for self.
+				s.mutex.Lock()
+				s.currentTerm++
+				s.votedFor = s.name
+				voteTerm = s.currentTerm
+				s.mutex.Unlock()
+				s.writeState(voteTerm, s.name)
+			}
 
 			// Send RequestVote RPCs to all other servers.
 			respChan = make(chan *RequestVoteResponse, len(s.peers))
@@ -787,7 +801,7 @@ func (s *server) candidateLoop() {
 				s.routineGroup.Add(1)
 				go func(peer *Peer) {
 					defer s.routineGroup.Done()
-					peer.sendVoteRequest(newRequestVoteRequest(currentTerm, candidate, lastLogIndex, lastLogTerm), respChan)
+					peer.sendVoteRequest(newRequestVoteRequest(voteTerm, candidate, lastLogIndex, lastLogTerm, prevote), respChan)
 				}(peer)
 			}
 
@@ -802,8 +816,13 @@ func (s *server) candidateLoop() {
 		}
 
 		// If we received enough votes then stop waiting for more votes.
-		// And return from the candidate loop
+		// A won pre-vote starts the real election; a won election leads.
 		if votesGranted == s.QuorumSize() {
+			if prevote {
+				prevote = false
+				doVote = true
+				continue
+			}
 			s.debugln("server.candidate.recv.enough.votes")
 			s.setState(Leader)
 			return
@@ -816,7 +835,7 @@ func (s *server) candidateLoop() {
 			return
 
 		case resp := <-respChan:
-			if success := s.processVoteResponse(resp); success {
+			if success := s.processVoteResponse(resp, prevote); success {
 				s.debugln("server.candidate.vote.granted: ", votesGranted)
 				votesGranted++
 			}
@@ -836,6 +855,8 @@ func (s *server) candidateLoop() {
 			e.c <- err
 
 		case <-timeoutChan:
+			// A new candidacy always probes with a pre-vote first.
+			prevote = true
 			doVote = true
 		}
 	}
@@ -1000,6 +1021,10 @@ func (s *server) processAppendEntriesRequest(req *AppendEntriesRequest) (*Append
 		return newAppendEntriesResponse(s.currentTerm, false, s.log.currentIndex(), s.log.CommitIndex()), false
 	}
 
+	s.mutex.Lock()
+	s.lastLeaderContact = time.Now()
+	s.mutex.Unlock()
+
 	if req.Term == s.currentTerm {
 		// Two leaders in the same term violates Raft's safety guarantee
 		// (§5.1). The previous code panicked here via _assert, which is
@@ -1112,20 +1137,20 @@ func (s *server) processAppendEntriesResponse(resp *AppendEntriesResponse) {
 
 // processVoteReponse processes a vote request:
 // 1. if the vote is granted for the current term of the candidate, return true
+//    (for a pre-vote, any grant at a term not newer than ours counts)
 // 2. if the vote is denied due to smaller term, update the term of this server
 //    which will also cause the candidate to step-down, and return false.
 // 3. if the vote is for a smaller term, ignore it and return false.
-func (s *server) processVoteResponse(resp *RequestVoteResponse) bool {
-	if resp.VoteGranted && resp.Term == s.currentTerm {
-		return true
-	}
-
+func (s *server) processVoteResponse(resp *RequestVoteResponse, prevote bool) bool {
 	if resp.Term > s.currentTerm {
 		s.debugln("server.candidate.vote.failed")
 		s.updateCurrentTerm(resp.Term, "")
-	} else {
-		s.debugln("server.candidate.vote: denied")
+		return false
 	}
+	if resp.VoteGranted && (prevote || resp.Term == s.currentTerm) {
+		return true
+	}
+	s.debugln("server.candidate.vote: denied")
 	return false
 }
 
@@ -1144,6 +1169,10 @@ func (s *server) RequestVote(req *RequestVoteRequest) *RequestVoteResponse {
 
 // Processes a "request vote" request.
 func (s *server) processRequestVoteRequest(req *RequestVoteRequest) (*RequestVoteResponse, bool) {
+
+	if req.Prevote {
+		return s.processPrevoteRequest(req), false
+	}
 
 	// If the request is coming from an old term then reject it.
 	if req.Term < s.Term() {
@@ -1180,6 +1209,35 @@ func (s *server) processRequestVoteRequest(req *RequestVoteRequest) (*RequestVot
 	s.writeState(currentTerm, req.CandidateName)
 
 	return newRequestVoteResponse(currentTerm, true), true
+}
+
+// Answers a pre-vote probe (Raft thesis §9.6). The request's Term is the one
+// the candidate would campaign under; granting never changes our term,
+// recorded vote, or election timer.
+func (s *server) processPrevoteRequest(req *RequestVoteRequest) *RequestVoteResponse {
+
+	// Deny a would-be term that is not newer than ours.
+	if req.Term <= s.currentTerm {
+		s.debugln("server.rv.deny.prevote: cause stale term")
+		return newRequestVoteResponse(s.currentTerm, false)
+	}
+
+	// Deny while a live leader was heard from within the election timeout;
+	// the candidate would only interrupt a healthy leader.
+	if s.State() == Leader || (s.leader != "" && time.Since(s.lastLeaderContact) < s.ElectionTimeout()) {
+		s.debugln("server.rv.deny.prevote: cause live leader ", s.leader)
+		return newRequestVoteResponse(s.currentTerm, false)
+	}
+
+	// If the candidate's log is not at least as up-to-date as our last log then don't vote.
+	lastIndex, lastTerm := s.log.lastInfo()
+	if lastIndex > req.LastLogIndex || lastTerm > req.LastLogTerm {
+		s.debugln("server.deny.prevote: cause out of date log: ", req.CandidateName)
+		return newRequestVoteResponse(s.currentTerm, false)
+	}
+
+	s.debugln("server.rv.prevote: ", s.name, " pre-votes for", req.CandidateName, "at term", req.Term)
+	return newRequestVoteResponse(s.currentTerm, true)
 }
 
 //--------------------------------------

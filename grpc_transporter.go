@@ -93,6 +93,7 @@ func (t *GrpcTransporter) SendVoteRequest(server Server, peer *Peer, req *Reques
 			LastLogIndex:  req.LastLogIndex,
 			LastLogTerm:   req.LastLogTerm,
 			CandidateName: req.CandidateName,
+			Prevote:       req.Prevote,
 		}
 
 		resp, err := client.OnSendVoteRequest(ctx, pbReq)
@@ -226,6 +227,7 @@ func (t *GrpcServer) OnSendVoteRequest(ctx context2.Context, pbReq *protobuf.Req
 		LastLogIndex:  pbReq.LastLogIndex,
 		LastLogTerm:   pbReq.LastLogTerm,
 		CandidateName: pbReq.CandidateName,
+		Prevote:       pbReq.Prevote,
 	}
 
 	resp := t.server.RequestVote(req)

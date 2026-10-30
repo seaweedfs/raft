@@ -31,6 +31,7 @@ message RequestVoteRequest {
     uint64 LastLogIndex = 2;
     uint64 LastLogTerm = 3;
     string CandidateName = 4;
+    bool Prevote = 5;
 }
 
 message RequestVoteResponse {
