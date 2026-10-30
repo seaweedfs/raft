@@ -15,6 +15,10 @@ type RequestVoteRequest struct {
 	LastLogIndex  uint64
 	LastLogTerm   uint64
 	CandidateName string
+	// Prevote marks the request as a pre-vote probe (Raft thesis §9.6):
+	// the receiver answers without updating its term or recorded vote, so
+	// an unreachable candidate cannot inflate its term through retries.
+	Prevote bool
 }
 
 // The response returned from a server after a vote for a candidate to become a leader.
@@ -25,12 +29,13 @@ type RequestVoteResponse struct {
 }
 
 // Creates a new RequestVote request.
-func newRequestVoteRequest(term uint64, candidateName string, lastLogIndex uint64, lastLogTerm uint64) *RequestVoteRequest {
+func newRequestVoteRequest(term uint64, candidateName string, lastLogIndex uint64, lastLogTerm uint64, prevote bool) *RequestVoteRequest {
 	return &RequestVoteRequest{
 		Term:          term,
 		LastLogIndex:  lastLogIndex,
 		LastLogTerm:   lastLogTerm,
 		CandidateName: candidateName,
+		Prevote:       prevote,
 	}
 }
 
@@ -42,6 +47,7 @@ func (req *RequestVoteRequest) Encode(w io.Writer) (int, error) {
 		LastLogIndex:  req.LastLogIndex,
 		LastLogTerm:   req.LastLogTerm,
 		CandidateName: req.CandidateName,
+		Prevote:       req.Prevote,
 	}
 	p, err := proto.Marshal(pb)
 	if err != nil {
@@ -71,6 +77,7 @@ func (req *RequestVoteRequest) Decode(r io.Reader) (int, error) {
 	req.LastLogIndex = pb.GetLastLogIndex()
 	req.LastLogTerm = pb.GetLastLogTerm()
 	req.CandidateName = pb.GetCandidateName()
+	req.Prevote = pb.GetPrevote()
 
 	return totalBytes, nil
 }

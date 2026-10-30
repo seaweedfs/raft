@@ -26,7 +26,7 @@ func TestServerRequestVote(t *testing.T) {
 	defer server.Stop()
 	// Use lastLogIndex=2 to account for the NOP entry that leaderLoop
 	// commits asynchronously after self-join.
-	resp := server.RequestVote(newRequestVoteRequest(1, "foo", 2, 0))
+	resp := server.RequestVote(newRequestVoteRequest(1, "foo", 2, 0, false))
 	if resp.Term != 1 || !resp.VoteGranted {
 		t.Fatalf("Invalid request vote response: %v/%v", resp.Term, resp.VoteGranted)
 	}
@@ -47,7 +47,7 @@ func TestServerRequestVoteDeniedForStaleTerm(t *testing.T) {
 	s.AppendEntries(newAppendEntriesRequest(2, 0, 0, 0, "ldr", []*LogEntry{}))
 
 	defer s.Stop()
-	resp := s.RequestVote(newRequestVoteRequest(1, "foo", 1, 0))
+	resp := s.RequestVote(newRequestVoteRequest(1, "foo", 1, 0, false))
 	if resp.Term != 2 || resp.VoteGranted {
 		t.Fatalf("Invalid request vote response: %v/%v", resp.Term, resp.VoteGranted)
 	}
@@ -69,11 +69,11 @@ func TestServerRequestVoteDeniedIfAlreadyVoted(t *testing.T) {
 	s.AppendEntries(newAppendEntriesRequest(2, 0, 0, 0, "ldr", []*LogEntry{}))
 	defer s.Stop()
 	// Use lastLogIndex=2 to account for join + NOP entries.
-	resp := s.RequestVote(newRequestVoteRequest(2, "foo", 2, 0))
+	resp := s.RequestVote(newRequestVoteRequest(2, "foo", 2, 0, false))
 	if resp.Term != 2 || !resp.VoteGranted {
 		t.Fatalf("First vote should not have been denied")
 	}
-	resp = s.RequestVote(newRequestVoteRequest(2, "bar", 2, 0))
+	resp = s.RequestVote(newRequestVoteRequest(2, "bar", 2, 0, false))
 	if resp.Term != 2 || resp.VoteGranted {
 		t.Fatalf("Second vote should have been denied")
 	}
@@ -91,11 +91,11 @@ func TestServerRequestVoteApprovedIfAlreadyVotedInOlderTerm(t *testing.T) {
 	// Bump term to 2 through the event loop to avoid data race.
 	s.AppendEntries(newAppendEntriesRequest(2, 0, 0, 0, "ldr", []*LogEntry{}))
 	defer s.Stop()
-	resp := s.RequestVote(newRequestVoteRequest(2, "foo", 2, 1))
+	resp := s.RequestVote(newRequestVoteRequest(2, "foo", 2, 1, false))
 	if resp.Term != 2 || !resp.VoteGranted || s.VotedFor() != "foo" {
 		t.Fatalf("First vote should not have been denied")
 	}
-	resp = s.RequestVote(newRequestVoteRequest(3, "bar", 2, 1))
+	resp = s.RequestVote(newRequestVoteRequest(3, "bar", 2, 1, false))
 
 	if resp.Term != 3 || !resp.VoteGranted || s.VotedFor() != "bar" {
 		t.Fatalf("Second vote should have been approved")
@@ -115,27 +115,117 @@ func TestServerRequestVoteDenyIfCandidateLogIsBehind(t *testing.T) {
 	defer s.Stop()
 
 	// request vote from term 3 with last log entry 2, 2
-	resp := s.RequestVote(newRequestVoteRequest(3, "foo", 2, 2))
+	resp := s.RequestVote(newRequestVoteRequest(3, "foo", 2, 2, false))
 	if resp.Term != 3 || resp.VoteGranted {
 		t.Fatalf("Stale index vote should have been denied [%v/%v]", resp.Term, resp.VoteGranted)
 	}
 
 	// request vote from term 2 with last log entry 2, 3
-	resp = s.RequestVote(newRequestVoteRequest(2, "foo", 3, 2))
+	resp = s.RequestVote(newRequestVoteRequest(2, "foo", 3, 2, false))
 	if resp.Term != 3 || resp.VoteGranted {
 		t.Fatalf("Stale term vote should have been denied [%v/%v]", resp.Term, resp.VoteGranted)
 	}
 
 	// request vote from term 3 with last log entry 2, 3
-	resp = s.RequestVote(newRequestVoteRequest(3, "foo", 3, 2))
+	resp = s.RequestVote(newRequestVoteRequest(3, "foo", 3, 2, false))
 	if resp.Term != 3 || !resp.VoteGranted {
 		t.Fatalf("Matching log vote should have been granted")
 	}
 
 	// request vote from term 3 with last log entry 2, 4
-	resp = s.RequestVote(newRequestVoteRequest(3, "foo", 4, 2))
+	resp = s.RequestVote(newRequestVoteRequest(3, "foo", 4, 2, false))
 	if resp.Term != 3 || !resp.VoteGranted {
 		t.Fatalf("Ahead-of-log vote should have been granted")
+	}
+}
+
+// A granted pre-vote never changes the voter's term or recorded vote.
+func TestServerPrevoteDoesNotMutateVoter(t *testing.T) {
+	s := newTestServer("1", &testTransporter{})
+	s.SetElectionTimeout(5 * time.Second)
+
+	s.Start()
+	defer s.Stop()
+
+	term := s.Term()
+	resp := s.RequestVote(newRequestVoteRequest(term+1, "foo", 10, 2, true))
+	if !resp.VoteGranted {
+		t.Fatalf("Pre-vote should have been granted: %v/%v", resp.Term, resp.VoteGranted)
+	}
+	if s.Term() != term || s.VotedFor() == "foo" {
+		t.Fatalf("Pre-vote mutated voter state: term %v votedFor %v", s.Term(), s.VotedFor())
+	}
+}
+
+// While a live leader was heard from within the election timeout, a pre-vote
+// is denied and the term is not adopted — the disruptive-server case: an
+// isolated node that rejoins cannot depose the healthy leader.
+func TestServerPrevoteDeniedWhileLeaderAlive(t *testing.T) {
+	s := newTestServer("1", &testTransporter{})
+	s.SetElectionTimeout(5 * time.Second)
+
+	s.Start()
+	defer s.Stop()
+
+	// A "leader" heartbeat at term 2.
+	s.AppendEntries(newAppendEntriesRequest(2, 0, 0, 0, "ldr", []*LogEntry{}))
+
+	resp := s.RequestVote(newRequestVoteRequest(3, "foo", 10, 2, true))
+	if resp.VoteGranted {
+		t.Fatal("Pre-vote should have been denied while the leader lease holds")
+	}
+	if s.Term() != 2 {
+		t.Fatalf("Pre-vote must not adopt the candidate's term: %v", s.Term())
+	}
+
+	// Once the leader goes quiet past the election timeout, pre-votes are
+	// granted again so a real election can still happen.
+	sv := s.(*server)
+	sv.mutex.Lock()
+	sv.lastLeaderContact = time.Now().Add(-time.Hour)
+	sv.mutex.Unlock()
+
+	resp = s.RequestVote(newRequestVoteRequest(3, "foo", 10, 2, true))
+	if !resp.VoteGranted {
+		t.Fatal("Pre-vote should have been granted after the leader lease expired")
+	}
+	if s.Term() != 2 {
+		t.Fatalf("Pre-vote must not adopt the candidate's term: %v", s.Term())
+	}
+}
+
+// A pre-vote under a term that is not newer than ours is denied.
+func TestServerPrevoteDeniedOnStaleTerm(t *testing.T) {
+	tmpLog := newLog()
+	e0, _ := newLogEntry(tmpLog, nil, 1, 1, &testCommand1{Val: "foo", I: 20})
+	e1, _ := newLogEntry(tmpLog, nil, 2, 1, &testCommand2{X: 100})
+	s := newTestServerWithLog("1", &testTransporter{}, []*LogEntry{e0, e1})
+	s.SetElectionTimeout(5 * time.Second)
+
+	s.Start()
+	defer s.Stop()
+
+	resp := s.RequestVote(newRequestVoteRequest(s.Term(), "foo", 10, 2, true))
+	if resp.VoteGranted {
+		t.Fatal("Pre-vote at the current term should have been denied")
+	}
+}
+
+// A pre-vote is denied if the candidate's log is behind ours.
+func TestServerPrevoteDenyIfCandidateLogIsBehind(t *testing.T) {
+	tmpLog := newLog()
+	e0, _ := newLogEntry(tmpLog, nil, 1, 1, &testCommand1{Val: "foo", I: 20})
+	e1, _ := newLogEntry(tmpLog, nil, 2, 1, &testCommand2{X: 100})
+	e2, _ := newLogEntry(tmpLog, nil, 3, 2, &testCommand1{Val: "bar", I: 0})
+	s := newTestServerWithLog("1", &testTransporter{}, []*LogEntry{e0, e1, e2})
+	s.SetElectionTimeout(5 * time.Second)
+
+	s.Start()
+	defer s.Stop()
+
+	resp := s.RequestVote(newRequestVoteRequest(3, "foo", 2, 2, true))
+	if resp.VoteGranted {
+		t.Fatal("Pre-vote with a stale log should have been denied")
 	}
 }
 
@@ -152,7 +242,7 @@ func TestProcessVoteResponse(t *testing.T) {
 		VoteGranted: true,
 		Term:        1,
 	}
-	if success := server.processVoteResponse(response); success {
+	if success := server.processVoteResponse(response, false); success {
 		t.Fatal("Process should fail if the resp's term is larger than server's")
 	}
 	if server.state != Follower {
@@ -163,7 +253,7 @@ func TestProcessVoteResponse(t *testing.T) {
 	// response Term: 2, granted
 	// Expectation: not success
 	response.Term = 2
-	if success := server.processVoteResponse(response); success {
+	if success := server.processVoteResponse(response, false); success {
 		t.Fatal("Process should fail if the resp's term is larger than server's")
 	}
 	if server.state != Follower {
@@ -174,7 +264,7 @@ func TestProcessVoteResponse(t *testing.T) {
 	// server Term: 2, status: Follower
 	// response Term: 2
 	// Expectation: success
-	if success := server.processVoteResponse(response); !success {
+	if success := server.processVoteResponse(response, false); !success {
 		t.Fatal("Process should success if the server's term is larger than resp's")
 	}
 
@@ -532,7 +622,7 @@ func TestServerVoteStatePersistsAcrossRestart(t *testing.T) {
 	}
 
 	// Vote for candidate "A" at term 5.
-	resp := s.RequestVote(newRequestVoteRequest(5, "A", 3, 5))
+	resp := s.RequestVote(newRequestVoteRequest(5, "A", 3, 5, false))
 	if !resp.VoteGranted {
 		t.Fatalf("Vote should have been granted to A")
 	}
@@ -561,19 +651,19 @@ func TestServerVoteStatePersistsAcrossRestart(t *testing.T) {
 
 	// A second candidate "B" requests a vote at the same term 5.
 	// This MUST be denied — granting it would allow two leaders in term 5.
-	resp = s2.RequestVote(newRequestVoteRequest(5, "B", 3, 5))
+	resp = s2.RequestVote(newRequestVoteRequest(5, "B", 3, 5, false))
 	if resp.VoteGranted {
 		t.Fatalf("Vote for B at term 5 should have been denied (already voted for A)")
 	}
 
 	// Voting for the SAME candidate "A" again at term 5 should still succeed.
-	resp = s2.RequestVote(newRequestVoteRequest(5, "A", 3, 5))
+	resp = s2.RequestVote(newRequestVoteRequest(5, "A", 3, 5, false))
 	if !resp.VoteGranted {
 		t.Fatalf("Re-vote for A at term 5 should have been granted")
 	}
 
 	// A vote at a HIGHER term should be granted (new term, new election).
-	resp = s2.RequestVote(newRequestVoteRequest(6, "B", 3, 5))
+	resp = s2.RequestVote(newRequestVoteRequest(6, "B", 3, 5, false))
 	if !resp.VoteGranted {
 		t.Fatalf("Vote for B at term 6 should have been granted")
 	}
@@ -596,7 +686,7 @@ func TestServerTermPersistsWithoutLogEntries(t *testing.T) {
 
 	// Simulate receiving a vote request at a high term (no log entries at
 	// this term will be written).
-	resp := s.RequestVote(newRequestVoteRequest(100, "A", 3, 100))
+	resp := s.RequestVote(newRequestVoteRequest(100, "A", 3, 100, false))
 	if !resp.VoteGranted {
 		t.Fatalf("Vote should have been granted")
 	}
