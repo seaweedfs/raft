@@ -321,6 +321,120 @@ func TestServerPromote(t *testing.T) {
 	}
 }
 
+// A follower cut off for several election timeouts must keep its term flat —
+// it only ever pre-votes — and rejoining must leave the leader, the term and
+// write availability untouched.
+func TestServerPrevotePartitionedRejoinKeepsLeader(t *testing.T) {
+	lookup := map[string]Server{}
+	var mu sync.Mutex
+	blocked := map[string]bool{}
+	cut := func(name string) bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return blocked[name]
+	}
+
+	transporter := &testTransporter{}
+	transporter.sendVoteRequestFunc = func(s Server, peer *Peer, req *RequestVoteRequest) *RequestVoteResponse {
+		if cut(s.Name()) || cut(peer.Name) {
+			return nil
+		}
+		return lookup[peer.Name].RequestVote(req)
+	}
+	transporter.sendAppendEntriesRequestFunc = func(s Server, peer *Peer, req *AppendEntriesRequest) *AppendEntriesResponse {
+		if cut(s.Name()) || cut(peer.Name) {
+			return nil
+		}
+		return lookup[peer.Name].AppendEntries(req)
+	}
+
+	// Distinct names matter here, so the cluster is built by hand rather
+	// than through newTestCluster.
+	e0, _ := newLogEntry(newLog(), nil, 1, 1, &testCommand1{Val: "foo", I: 20})
+	var servers []Server
+	for _, name := range []string{"1", "2", "3"} {
+		s := newTestServerWithLog(name, transporter, []*LogEntry{e0})
+		s.SetElectionTimeout(testElectionTimeout)
+		s.SetHeartbeatInterval(testHeartbeatInterval)
+		lookup[name] = s
+		servers = append(servers, s)
+	}
+	for _, s := range servers {
+		s.Start()
+		defer s.Stop()
+		for _, peer := range servers {
+			s.AddPeer(peer.Name(), "")
+		}
+	}
+
+	waitFor := func(cond func() bool, what string) {
+		t.Helper()
+		deadline := time.Now().Add(10 * time.Second)
+		for !cond() {
+			if time.Now().After(deadline) {
+				states := ""
+				for _, s := range servers {
+					states += fmt.Sprintf(" %s=%s@%v", s.Name(), s.State(), s.Term())
+				}
+				t.Fatalf("Timed out waiting for %s —%s", what, states)
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}
+	leaderOf := func() Server {
+		for _, s := range servers {
+			if s.State() == Leader {
+				return s
+			}
+		}
+		return nil
+	}
+
+	waitFor(func() bool { return leaderOf() != nil }, "a leader to be elected")
+	leader := leaderOf()
+
+	var isolated Server
+	for _, s := range servers {
+		if s.Name() != leader.Name() {
+			isolated = s
+		}
+	}
+	isolatedTerm := isolated.Term()
+	mu.Lock()
+	blocked[isolated.Name()] = true
+	mu.Unlock()
+
+	// Several election timeouts without contact: only pre-votes go out, so
+	// the term cannot grow and no real election can depose the leader.
+	time.Sleep(5 * testElectionTimeout)
+	if got := isolated.Term(); got != isolatedTerm {
+		t.Fatalf("Isolated server inflated its term: %v -> %v", isolatedTerm, got)
+	}
+
+	mu.Lock()
+	delete(blocked, isolated.Name())
+	mu.Unlock()
+
+	// Heartbeats resume: the ex-isolated node leaves candidacy, the cluster
+	// converges on exactly one leader, and it still takes writes. The winner
+	// may be the rejoined node itself if the old leader stalled for a full
+	// election timeout.
+	waitFor(func() bool { return isolated.State() != Candidate }, "rejoined server to settle")
+	leaders := func() int {
+		n := 0
+		for _, s := range servers {
+			if s.State() == Leader {
+				n++
+			}
+		}
+		return n
+	}
+	waitFor(func() bool { return leaders() == 1 }, "the cluster to settle on one leader")
+	if _, err := leaderOf().Do(&testCommand1{Val: "bar", I: 1}); err != nil {
+		t.Fatalf("Write after rejoin failed: %v", err)
+	}
+}
+
 //--------------------------------------
 // Append Entries
 //--------------------------------------
