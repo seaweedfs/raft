@@ -270,6 +270,40 @@ func TestProcessVoteResponse(t *testing.T) {
 
 }
 
+// A pre-vote grant counts even when the voter replies at a newer term —
+// voters without PreVote support record a real vote at the campaign term —
+// while a denial at a newer term still steps the candidate down.
+func TestProcessVoteResponsePrevote(t *testing.T) {
+	// server Term: 0, status: Candidate
+	// response Term: 1, granted
+	// Expectation: success, term and state unchanged
+	server := &server{}
+	server.eventDispatcher = newEventDispatcher(server)
+	server.currentTerm = 0
+	server.state = Candidate
+	response := &RequestVoteResponse{
+		VoteGranted: true,
+		Term:        1,
+	}
+	if success := server.processVoteResponse(response, true); !success {
+		t.Fatal("Pre-vote grant should count even if the resp's term is larger than server's")
+	}
+	if server.state != Candidate || server.currentTerm != 0 {
+		t.Fatal("Pre-vote grant should not change the server's term or state")
+	}
+
+	// server Term: 0, status: Candidate
+	// response Term: 1, denied
+	// Expectation: not success, step down to the newer term
+	response.VoteGranted = false
+	if success := server.processVoteResponse(response, true); success {
+		t.Fatal("Pre-vote denial should fail if the resp's term is larger than server's")
+	}
+	if server.state != Follower || server.currentTerm != 1 {
+		t.Fatal("Pre-vote denial at a newer term should step the server down")
+	}
+}
+
 // //--------------------------------------
 // // Promotion
 // //--------------------------------------
