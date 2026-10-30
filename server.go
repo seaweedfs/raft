@@ -775,6 +775,7 @@ func (s *server) candidateLoop() {
 	doVote := true
 	prevote := true
 	votesGranted := 0
+	votesFrom := map[*Peer]bool{}
 	var timeoutChan <-chan time.Time
 	var respChan chan *RequestVoteResponse
 
@@ -797,15 +798,19 @@ func (s *server) candidateLoop() {
 				s.writeState(voteTerm, s.name)
 			}
 
-			// Send RequestVote RPCs to all other servers.
+			// Send RequestVote RPCs to all other servers. Each round's
+			// workers get their own request and channel so a delayed
+			// worker cannot vote under the wrong flag or answer into a
+			// later round.
 			respChan = make(chan *RequestVoteResponse, len(s.peers))
 			candidate := s.name
 			for _, peer := range s.peers {
+				req := newRequestVoteRequest(voteTerm, candidate, lastLogIndex, lastLogTerm, prevote)
 				s.routineGroup.Add(1)
-				go func(peer *Peer) {
+				go func(peer *Peer, c chan *RequestVoteResponse) {
 					defer s.routineGroup.Done()
-					peer.sendVoteRequest(newRequestVoteRequest(voteTerm, candidate, lastLogIndex, lastLogTerm, prevote), respChan)
-				}(peer)
+					peer.sendVoteRequest(req, c)
+				}(peer, respChan)
 			}
 
 			// Wait for either:
@@ -814,6 +819,7 @@ func (s *server) candidateLoop() {
 			//   * Election timeout elapses without election resolution: increment term, start new election
 			//   * Discover higher term: step down (§5.1)
 			votesGranted = 1
+			votesFrom = map[*Peer]bool{}
 			timeoutChan = afterBetween(s.ElectionTimeout(), s.ElectionTimeout()*2)
 			doVote = false
 		}
@@ -838,8 +844,12 @@ func (s *server) candidateLoop() {
 			return
 
 		case resp := <-respChan:
+			if votesFrom[resp.peer] {
+				continue
+			}
 			if success := s.processVoteResponse(resp, prevote); success {
 				s.debugln("server.candidate.vote.granted: ", votesGranted)
+				votesFrom[resp.peer] = true
 				votesGranted++
 			}
 
