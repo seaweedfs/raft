@@ -1149,19 +1149,21 @@ func (s *server) processAppendEntriesResponse(resp *AppendEntriesResponse) {
 }
 
 // processVoteReponse processes a vote request:
-// 1. if the vote is granted for the current term of the candidate, return true
-//    (for a pre-vote, any grant at a term not newer than ours counts)
+// 1. if the vote is granted for the current term of the candidate, return true;
+//    a pre-vote grant counts at any term — a voter without PreVote support
+//    records a real vote at the campaign term, which the election re-claims,
+//    while stepping down on its answer would deadlock a mixed-version cluster
 // 2. if the vote is denied due to smaller term, update the term of this server
 //    which will also cause the candidate to step-down, and return false.
 // 3. if the vote is for a smaller term, ignore it and return false.
 func (s *server) processVoteResponse(resp *RequestVoteResponse, prevote bool) bool {
+	if resp.VoteGranted && (prevote || resp.Term == s.currentTerm) {
+		return true
+	}
 	if resp.Term > s.currentTerm {
 		s.debugln("server.candidate.vote.failed")
 		s.updateCurrentTerm(resp.Term, "")
 		return false
-	}
-	if resp.VoteGranted && (prevote || resp.Term == s.currentTerm) {
-		return true
 	}
 	s.debugln("server.candidate.vote: denied")
 	return false
