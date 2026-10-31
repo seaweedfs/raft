@@ -442,7 +442,7 @@ func init() {
 func (s *server) Start() error {
 	// Exit if the server is already running.
 	if s.Running() {
-		return fmt.Errorf("raft.Server: Server already running[%v]", s.state)
+		return fmt.Errorf("raft.Server: Server already running[%v]", s.State())
 	}
 
 	if err := s.Init(); err != nil {
@@ -483,14 +483,16 @@ func (s *server) Start() error {
 // Otherwise, Init() will load in the log entries from the log file.
 func (s *server) Init() error {
 	if s.Running() {
-		return fmt.Errorf("raft.Server: Server already running[%v]", s.state)
+		return fmt.Errorf("raft.Server: Server already running[%v]", s.State())
 	}
 
 	// Server has been initialized or server was stopped after initialized
 	// If log has been initialized, we know that the server was stopped after
 	// running.
-	if s.state == Initialized || s.log.initialized {
+	if s.State() == Initialized || s.log.initialized {
+		s.mutex.Lock()
 		s.state = Initialized
+		s.mutex.Unlock()
 		return nil
 	}
 
@@ -523,12 +525,13 @@ func (s *server) Init() error {
 	// persisted currentTerm if it is higher (the term may have been
 	// incremented during an election without any log entries written).
 	_, logTerm := s.log.lastInfo()
+	s.mutex.Lock()
 	if logTerm > s.currentTerm {
 		s.currentTerm = logTerm
 		s.votedFor = ""
 	}
-
 	s.state = Initialized
+	s.mutex.Unlock()
 	return nil
 }
 
@@ -772,6 +775,7 @@ func (s *server) candidateLoop() {
 	doVote := true
 	prevote := true
 	votesGranted := 0
+	votesFrom := map[*Peer]bool{}
 	var timeoutChan <-chan time.Time
 	var respChan chan *RequestVoteResponse
 
@@ -794,15 +798,19 @@ func (s *server) candidateLoop() {
 				s.writeState(voteTerm, s.name)
 			}
 
-			// Send RequestVote RPCs to all other servers.
+			// Send RequestVote RPCs to all other servers. Each round's
+			// workers get their own request and channel so a delayed
+			// worker cannot vote under the wrong flag or answer into a
+			// later round.
 			respChan = make(chan *RequestVoteResponse, len(s.peers))
 			candidate := s.name
 			for _, peer := range s.peers {
+				req := newRequestVoteRequest(voteTerm, candidate, lastLogIndex, lastLogTerm, prevote)
 				s.routineGroup.Add(1)
-				go func(peer *Peer) {
+				go func(peer *Peer, c chan *RequestVoteResponse) {
 					defer s.routineGroup.Done()
-					peer.sendVoteRequest(newRequestVoteRequest(voteTerm, candidate, lastLogIndex, lastLogTerm, prevote), respChan)
-				}(peer)
+					peer.sendVoteRequest(req, c)
+				}(peer, respChan)
 			}
 
 			// Wait for either:
@@ -811,6 +819,7 @@ func (s *server) candidateLoop() {
 			//   * Election timeout elapses without election resolution: increment term, start new election
 			//   * Discover higher term: step down (§5.1)
 			votesGranted = 1
+			votesFrom = map[*Peer]bool{}
 			timeoutChan = afterBetween(s.ElectionTimeout(), s.ElectionTimeout()*2)
 			doVote = false
 		}
@@ -835,8 +844,12 @@ func (s *server) candidateLoop() {
 			return
 
 		case resp := <-respChan:
+			if votesFrom[resp.peer] {
+				continue
+			}
 			if success := s.processVoteResponse(resp, prevote); success {
 				s.debugln("server.candidate.vote.granted: ", votesGranted)
+				votesFrom[resp.peer] = true
 				votesGranted++
 			}
 
@@ -1136,19 +1149,21 @@ func (s *server) processAppendEntriesResponse(resp *AppendEntriesResponse) {
 }
 
 // processVoteReponse processes a vote request:
-// 1. if the vote is granted for the current term of the candidate, return true
-//    (for a pre-vote, any grant at a term not newer than ours counts)
+// 1. if the vote is granted for the current term of the candidate, return true;
+//    a pre-vote grant counts at any term — a voter without PreVote support
+//    records a real vote at the campaign term, which the election re-claims,
+//    while stepping down on its answer would deadlock a mixed-version cluster
 // 2. if the vote is denied due to smaller term, update the term of this server
 //    which will also cause the candidate to step-down, and return false.
 // 3. if the vote is for a smaller term, ignore it and return false.
 func (s *server) processVoteResponse(resp *RequestVoteResponse, prevote bool) bool {
+	if resp.VoteGranted && (prevote || resp.Term == s.currentTerm) {
+		return true
+	}
 	if resp.Term > s.currentTerm {
 		s.debugln("server.candidate.vote.failed")
 		s.updateCurrentTerm(resp.Term, "")
 		return false
-	}
-	if resp.VoteGranted && (prevote || resp.Term == s.currentTerm) {
-		return true
 	}
 	s.debugln("server.candidate.vote: denied")
 	return false
@@ -1667,13 +1682,15 @@ func (s *server) writeConf() {
 		peers[i] = peer.clone()
 		i++
 	}
+	currentTerm := s.currentTerm
+	votedFor := s.votedFor
 	s.mutex.RUnlock()
 
 	r := &Config{
 		CommitIndex: s.log.commitIndex,
 		Peers:       peers,
-		CurrentTerm: s.currentTerm,
-		VotedFor:    s.votedFor,
+		CurrentTerm: currentTerm,
+		VotedFor:    votedFor,
 	}
 
 	b, err := json.Marshal(r)
