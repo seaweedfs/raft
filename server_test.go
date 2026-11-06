@@ -354,13 +354,13 @@ func TestServerLeaderQuorumCheckFollowsElectionTimeout(t *testing.T) {
 		}
 		time.Sleep(time.Millisecond)
 	}
-	s.SetElectionTimeout(time.Hour)
+	s.SetElectionTimeout(50 * time.Millisecond)
 	time.Sleep(20 * time.Millisecond)
 
 	before := checks.count()
-	time.Sleep(200 * time.Millisecond)
-	if n := checks.count() - before; n > 0 {
-		t.Fatalf("leader ran %d quorum checks in 200ms with a 1h election timeout", n)
+	time.Sleep(300 * time.Millisecond)
+	if n := checks.count() - before; n < 1 || n > 30 {
+		t.Fatalf("leader ran %d quorum checks in 300ms with a 50ms election timeout", n)
 	}
 }
 
