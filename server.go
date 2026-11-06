@@ -137,6 +137,8 @@ type server struct {
 	electionTimeout   time.Duration
 	heartbeatInterval time.Duration
 
+	electionTimeoutChanged chan struct{}
+
 	snapshot *Snapshot
 
 	// Held while a snapshot is being written, so only one is ever in flight.
@@ -187,6 +189,7 @@ func NewServer(name string, path string, transporter Transporter, stateMachine S
 		log:                     newLog(),
 		c:                       make(chan *ev, 256),
 		electionTimeout:         DefaultElectionTimeout,
+		electionTimeoutChanged:  make(chan struct{}, 1),
 		heartbeatInterval:       DefaultHeartbeatInterval,
 		maxLogEntriesPerRequest: MaxLogEntriesPerRequest,
 		connectionString:        connectionString,
@@ -392,7 +395,14 @@ func (s *server) ElectionTimeout() time.Duration {
 func (s *server) SetElectionTimeout(duration time.Duration) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
+	if s.electionTimeout == duration {
+		return
+	}
 	s.electionTimeout = duration
+	select {
+	case s.electionTimeoutChanged <- struct{}{}:
+	default:
+	}
 }
 
 //--------------------------------------
@@ -896,7 +906,7 @@ func (s *server) leaderLoop() {
 		s.Do(NOPCommand{})
 	}()
 
-	ticker := time.Tick(s.ElectionTimeout())
+	quorumCheck := afterIfPositive(s.ElectionTimeout())
 	// Begin to collect response from followers
 	for s.State() == Leader {
 		s.maybeTakeSnapshot()
@@ -910,9 +920,14 @@ func (s *server) leaderLoop() {
 			s.setState(Stopped)
 			return
 
-		case <-ticker:
+		case <-s.electionTimeoutChanged:
+			quorumCheck = afterIfPositive(s.ElectionTimeout())
+
+		case <-quorumCheck:
+			timeout := s.ElectionTimeout()
+			quorumCheck = afterIfPositive(timeout)
 			// Split-brain
-			if s.checkQuorumActive(s.ElectionTimeout()) == false {
+			if timeout > 0 && s.checkQuorumActive(timeout) == false {
 				s.debugln("step.down.to.follower")
 				var wg sync.WaitGroup
 				for _, peer := range s.peers {

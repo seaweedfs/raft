@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strconv"
 	"sync"
 	"testing"
@@ -327,6 +328,127 @@ func TestServerPromoteSelf(t *testing.T) {
 		}
 		time.Sleep(time.Millisecond)
 	}
+}
+
+// A leader that self-elected on a tiny election timeout must pick up the
+// restored timeout for its quorum checks instead of ticking at the tiny one.
+func TestServerLeaderQuorumCheckFollowsElectionTimeout(t *testing.T) {
+	checks := &quorumCheckCounter{name: "leader-timer"}
+	logger.SetOutput(checks)
+	SetLogLevel(Trace)
+	defer func() {
+		SetLogLevel(0)
+		logger.SetOutput(os.Stdout)
+	}()
+
+	for _, tc := range []struct {
+		name     string
+		timeouts []time.Duration
+		min, max int
+	}{
+		{name: "restored", timeouts: []time.Duration{50 * time.Millisecond}, min: 1, max: 30},
+		{name: "disabled", timeouts: []time.Duration{0}, min: 0, max: 0},
+		{name: "re-enabled", timeouts: []time.Duration{0, 50 * time.Millisecond}, min: 1, max: 30},
+		{name: "shortened", timeouts: []time.Duration{time.Hour, 50 * time.Millisecond}, min: 1, max: 30},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e0, _ := newLogEntry(newLog(), nil, 1, 1, &testCommand1{Val: "foo", I: 20})
+			s := newTestServerWithLog("leader-timer", &testTransporter{}, []*LogEntry{e0})
+			s.SetElectionTimeout(time.Millisecond)
+			initial := checks.count()
+			s.Start()
+			defer s.Stop()
+
+			deadline := time.Now().Add(5 * time.Second)
+			for s.State() != Leader || checks.count() == initial {
+				if time.Now().After(deadline) {
+					t.Fatalf("Server did not self-promote and check quorum: %v", s.State())
+				}
+				time.Sleep(time.Millisecond)
+			}
+			for _, timeout := range tc.timeouts {
+				s.SetElectionTimeout(timeout)
+				time.Sleep(20 * time.Millisecond)
+			}
+
+			before := checks.count()
+			time.Sleep(300 * time.Millisecond)
+			if n := checks.count() - before; n < tc.min || n > tc.max {
+				t.Fatalf("leader ran %d quorum checks in 300ms after election timeouts %v", n, tc.timeouts)
+			}
+		})
+	}
+}
+
+// A pending quorum check that fires after the election timeout was set to
+// zero must not run a zero-window check and depose a healthy leader.
+func TestServerLeaderKeepsLeadershipWhenElectionTimeoutDisabled(t *testing.T) {
+	lookup := map[string]Server{}
+	transporter := &testTransporter{}
+	transporter.sendVoteRequestFunc = func(s Server, peer *Peer, req *RequestVoteRequest) *RequestVoteResponse {
+		return lookup[peer.Name].RequestVote(req)
+	}
+	transporter.sendAppendEntriesRequestFunc = func(s Server, peer *Peer, req *AppendEntriesRequest) *AppendEntriesResponse {
+		return lookup[peer.Name].AppendEntries(req)
+	}
+
+	e0, _ := newLogEntry(newLog(), nil, 1, 1, &testCommand1{Val: "foo", I: 20})
+	var servers []Server
+	for _, name := range []string{"1", "2", "3"} {
+		s := newTestServerWithLog(name, transporter, []*LogEntry{e0})
+		s.SetElectionTimeout(testElectionTimeout)
+		s.SetHeartbeatInterval(testHeartbeatInterval)
+		lookup[name] = s
+		servers = append(servers, s)
+	}
+	for _, s := range servers {
+		s.Start()
+		defer s.Stop()
+		for _, peer := range servers {
+			s.AddPeer(peer.Name(), "")
+		}
+	}
+
+	var leader Server
+	deadline := time.Now().Add(10 * time.Second)
+	for leader == nil {
+		if time.Now().After(deadline) {
+			t.Fatal("No leader elected")
+		}
+		time.Sleep(time.Millisecond)
+		for _, s := range servers {
+			if s.State() == Leader {
+				leader = s
+			}
+		}
+	}
+
+	leader.SetElectionTimeout(0)
+	time.Sleep(3 * testElectionTimeout)
+	if leader.State() != Leader {
+		t.Fatalf("Leader stepped down after its election timeout was disabled: %v", leader.State())
+	}
+}
+
+type quorumCheckCounter struct {
+	name string
+	mu   sync.Mutex
+	n    int
+}
+
+func (c *quorumCheckCounter) Write(p []byte) (int, error) {
+	if bytes.Contains(p, []byte("["+c.name+" ")) && bytes.Contains(p, []byte("check.quorum.active")) {
+		c.mu.Lock()
+		c.n++
+		c.mu.Unlock()
+	}
+	return len(p), nil
+}
+
+func (c *quorumCheckCounter) count() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.n
 }
 
 //Ensure that we can promote a server within a cluster to a leader.
