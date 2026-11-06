@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strconv"
 	"sync"
 	"testing"
@@ -327,6 +328,61 @@ func TestServerPromoteSelf(t *testing.T) {
 		}
 		time.Sleep(time.Millisecond)
 	}
+}
+
+// A leader that self-elected on a tiny election timeout must pick up the
+// restored timeout for its quorum checks instead of ticking at the tiny one.
+func TestServerLeaderQuorumCheckFollowsElectionTimeout(t *testing.T) {
+	checks := &quorumCheckCounter{name: "leader-timer"}
+	logger.SetOutput(checks)
+	SetLogLevel(Trace)
+	defer func() {
+		SetLogLevel(0)
+		logger.SetOutput(os.Stdout)
+	}()
+
+	e0, _ := newLogEntry(newLog(), nil, 1, 1, &testCommand1{Val: "foo", I: 20})
+	s := newTestServerWithLog("leader-timer", &testTransporter{}, []*LogEntry{e0})
+	s.SetElectionTimeout(time.Millisecond)
+	s.Start()
+	defer s.Stop()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for s.State() != Leader {
+		if time.Now().After(deadline) {
+			t.Fatalf("Server self-promotion failed: %v", s.State())
+		}
+		time.Sleep(time.Millisecond)
+	}
+	s.SetElectionTimeout(time.Hour)
+	time.Sleep(20 * time.Millisecond)
+
+	before := checks.count()
+	time.Sleep(200 * time.Millisecond)
+	if n := checks.count() - before; n > 0 {
+		t.Fatalf("leader ran %d quorum checks in 200ms with a 1h election timeout", n)
+	}
+}
+
+type quorumCheckCounter struct {
+	name string
+	mu   sync.Mutex
+	n    int
+}
+
+func (c *quorumCheckCounter) Write(p []byte) (int, error) {
+	if bytes.Contains(p, []byte("["+c.name+" ")) && bytes.Contains(p, []byte("check.quorum.active")) {
+		c.mu.Lock()
+		c.n++
+		c.mu.Unlock()
+	}
+	return len(p), nil
+}
+
+func (c *quorumCheckCounter) count() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.n
 }
 
 //Ensure that we can promote a server within a cluster to a leader.
