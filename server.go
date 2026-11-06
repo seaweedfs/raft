@@ -896,8 +896,7 @@ func (s *server) leaderLoop() {
 		s.Do(NOPCommand{})
 	}()
 
-	quorumTimer := time.NewTimer(s.ElectionTimeout())
-	defer quorumTimer.Stop()
+	quorumCheck := afterIfPositive(s.ElectionTimeout())
 	// Begin to collect response from followers
 	for s.State() == Leader {
 		s.maybeTakeSnapshot()
@@ -911,8 +910,8 @@ func (s *server) leaderLoop() {
 			s.setState(Stopped)
 			return
 
-		case <-quorumTimer.C:
-			quorumTimer.Reset(s.ElectionTimeout())
+		case <-quorumCheck:
+			quorumCheck = afterIfPositive(s.ElectionTimeout())
 			// Split-brain
 			if s.checkQuorumActive(s.ElectionTimeout()) == false {
 				s.debugln("step.down.to.follower")

@@ -52,6 +52,14 @@ func afterBetween(min time.Duration, max time.Duration) <-chan time.Time {
 	return time.After(d)
 }
 
+// Like time.Tick, a non-positive duration yields a channel that never fires.
+func afterIfPositive(d time.Duration) <-chan time.Time {
+	if d <= 0 {
+		return nil
+	}
+	return time.After(d)
+}
+
 // TODO(xiangli): Remove assertions when we reach version 1.0
 
 // _assert will panic with a given formatted message if the given condition is false.
