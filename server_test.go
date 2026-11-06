@@ -402,11 +402,13 @@ func TestServerLeaderKeepsLeadershipWhenElectionTimeoutDisabled(t *testing.T) {
 		servers = append(servers, s)
 	}
 	for _, s := range servers {
-		s.Start()
-		defer s.Stop()
 		for _, peer := range servers {
 			s.AddPeer(peer.Name(), "")
 		}
+	}
+	for _, s := range servers {
+		s.Start()
+		defer s.Stop()
 	}
 
 	var leader Server
