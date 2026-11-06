@@ -374,6 +374,56 @@ func TestServerLeaderQuorumCheckFollowsElectionTimeout(t *testing.T) {
 	}
 }
 
+// A pending quorum check that fires after the election timeout was set to
+// zero must not run a zero-window check and depose a healthy leader.
+func TestServerLeaderKeepsLeadershipWhenElectionTimeoutDisabled(t *testing.T) {
+	lookup := map[string]Server{}
+	transporter := &testTransporter{}
+	transporter.sendVoteRequestFunc = func(s Server, peer *Peer, req *RequestVoteRequest) *RequestVoteResponse {
+		return lookup[peer.Name].RequestVote(req)
+	}
+	transporter.sendAppendEntriesRequestFunc = func(s Server, peer *Peer, req *AppendEntriesRequest) *AppendEntriesResponse {
+		return lookup[peer.Name].AppendEntries(req)
+	}
+
+	e0, _ := newLogEntry(newLog(), nil, 1, 1, &testCommand1{Val: "foo", I: 20})
+	var servers []Server
+	for _, name := range []string{"1", "2", "3"} {
+		s := newTestServerWithLog(name, transporter, []*LogEntry{e0})
+		s.SetElectionTimeout(testElectionTimeout)
+		s.SetHeartbeatInterval(testHeartbeatInterval)
+		lookup[name] = s
+		servers = append(servers, s)
+	}
+	for _, s := range servers {
+		s.Start()
+		defer s.Stop()
+		for _, peer := range servers {
+			s.AddPeer(peer.Name(), "")
+		}
+	}
+
+	var leader Server
+	deadline := time.Now().Add(10 * time.Second)
+	for leader == nil {
+		if time.Now().After(deadline) {
+			t.Fatal("No leader elected")
+		}
+		time.Sleep(time.Millisecond)
+		for _, s := range servers {
+			if s.State() == Leader {
+				leader = s
+			}
+		}
+	}
+
+	leader.SetElectionTimeout(0)
+	time.Sleep(3 * testElectionTimeout)
+	if leader.State() != Leader {
+		t.Fatalf("Leader stepped down after its election timeout was disabled: %v", leader.State())
+	}
+}
+
 type quorumCheckCounter struct {
 	name string
 	mu   sync.Mutex

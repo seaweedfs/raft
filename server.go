@@ -911,9 +911,10 @@ func (s *server) leaderLoop() {
 			return
 
 		case <-quorumCheck:
-			quorumCheck = afterIfPositive(s.ElectionTimeout())
+			timeout := s.ElectionTimeout()
+			quorumCheck = afterIfPositive(timeout)
 			// Split-brain
-			if s.checkQuorumActive(s.ElectionTimeout()) == false {
+			if timeout > 0 && s.checkQuorumActive(timeout) == false {
 				s.debugln("step.down.to.follower")
 				var wg sync.WaitGroup
 				for _, peer := range s.peers {
