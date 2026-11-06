@@ -137,6 +137,8 @@ type server struct {
 	electionTimeout   time.Duration
 	heartbeatInterval time.Duration
 
+	electionTimeoutChanged chan struct{}
+
 	snapshot *Snapshot
 
 	// Held while a snapshot is being written, so only one is ever in flight.
@@ -187,6 +189,7 @@ func NewServer(name string, path string, transporter Transporter, stateMachine S
 		log:                     newLog(),
 		c:                       make(chan *ev, 256),
 		electionTimeout:         DefaultElectionTimeout,
+		electionTimeoutChanged:  make(chan struct{}, 1),
 		heartbeatInterval:       DefaultHeartbeatInterval,
 		maxLogEntriesPerRequest: MaxLogEntriesPerRequest,
 		connectionString:        connectionString,
@@ -392,7 +395,14 @@ func (s *server) ElectionTimeout() time.Duration {
 func (s *server) SetElectionTimeout(duration time.Duration) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
+	if s.electionTimeout == duration {
+		return
+	}
 	s.electionTimeout = duration
+	select {
+	case s.electionTimeoutChanged <- struct{}{}:
+	default:
+	}
 }
 
 //--------------------------------------
@@ -909,6 +919,9 @@ func (s *server) leaderLoop() {
 			}
 			s.setState(Stopped)
 			return
+
+		case <-s.electionTimeoutChanged:
+			quorumCheck = afterIfPositive(s.ElectionTimeout())
 
 		case <-quorumCheck:
 			timeout := s.ElectionTimeout()
