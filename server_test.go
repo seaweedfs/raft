@@ -341,26 +341,36 @@ func TestServerLeaderQuorumCheckFollowsElectionTimeout(t *testing.T) {
 		logger.SetOutput(os.Stdout)
 	}()
 
-	e0, _ := newLogEntry(newLog(), nil, 1, 1, &testCommand1{Val: "foo", I: 20})
-	s := newTestServerWithLog("leader-timer", &testTransporter{}, []*LogEntry{e0})
-	s.SetElectionTimeout(time.Millisecond)
-	s.Start()
-	defer s.Stop()
+	for _, tc := range []struct {
+		restored time.Duration
+		min, max int
+	}{
+		{restored: 50 * time.Millisecond, min: 1, max: 30},
+		{restored: 0, min: 0, max: 0},
+	} {
+		t.Run(tc.restored.String(), func(t *testing.T) {
+			e0, _ := newLogEntry(newLog(), nil, 1, 1, &testCommand1{Val: "foo", I: 20})
+			s := newTestServerWithLog("leader-timer", &testTransporter{}, []*LogEntry{e0})
+			s.SetElectionTimeout(time.Millisecond)
+			s.Start()
+			defer s.Stop()
 
-	deadline := time.Now().Add(5 * time.Second)
-	for s.State() != Leader {
-		if time.Now().After(deadline) {
-			t.Fatalf("Server self-promotion failed: %v", s.State())
-		}
-		time.Sleep(time.Millisecond)
-	}
-	s.SetElectionTimeout(50 * time.Millisecond)
-	time.Sleep(20 * time.Millisecond)
+			deadline := time.Now().Add(5 * time.Second)
+			for s.State() != Leader {
+				if time.Now().After(deadline) {
+					t.Fatalf("Server self-promotion failed: %v", s.State())
+				}
+				time.Sleep(time.Millisecond)
+			}
+			s.SetElectionTimeout(tc.restored)
+			time.Sleep(20 * time.Millisecond)
 
-	before := checks.count()
-	time.Sleep(300 * time.Millisecond)
-	if n := checks.count() - before; n < 1 || n > 30 {
-		t.Fatalf("leader ran %d quorum checks in 300ms with a 50ms election timeout", n)
+			before := checks.count()
+			time.Sleep(300 * time.Millisecond)
+			if n := checks.count() - before; n < tc.min || n > tc.max {
+				t.Fatalf("leader ran %d quorum checks in 300ms with a %v election timeout", n, tc.restored)
+			}
+		})
 	}
 }
 
