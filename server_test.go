@@ -355,13 +355,14 @@ func TestServerLeaderQuorumCheckFollowsElectionTimeout(t *testing.T) {
 			e0, _ := newLogEntry(newLog(), nil, 1, 1, &testCommand1{Val: "foo", I: 20})
 			s := newTestServerWithLog("leader-timer", &testTransporter{}, []*LogEntry{e0})
 			s.SetElectionTimeout(time.Millisecond)
+			initial := checks.count()
 			s.Start()
 			defer s.Stop()
 
 			deadline := time.Now().Add(5 * time.Second)
-			for s.State() != Leader {
+			for s.State() != Leader || checks.count() == initial {
 				if time.Now().After(deadline) {
-					t.Fatalf("Server self-promotion failed: %v", s.State())
+					t.Fatalf("Server did not self-promote and check quorum: %v", s.State())
 				}
 				time.Sleep(time.Millisecond)
 			}
